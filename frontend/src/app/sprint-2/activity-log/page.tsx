@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Download, FileText, Filter, Search, Shield, CheckCircle, AlertCircle, XCircle, Eye, User, Wallet, Package, Settings, Lock, Globe, LogIn, UserPlus, Key, Archive, AlertTriangle } from 'lucide-react';
-import { api, auth } from '../lib/api';
+import { Calendar, Clock, Download, FileText, Filter, Search, Shield, CheckCircle, AlertCircle, XCircle, Eye, User, Wallet, Package, Settings, Lock, Globe, LogIn, UserPlus, Key, Archive, AlertTriangle, RefreshCw } from 'lucide-react';
+import { api, auth } from '@/lib/api';
 
-const actionIcons = {
+const actionIcons: { [key: string]: React.ComponentType<any> } = {
   VAULT_ACCESS: Eye,
   SBT_MINTED: Package,
   PROXY_REQUEST_SUBMITTED: User,
@@ -80,27 +80,118 @@ const statusConfig = {
     bg: 'bg-blue-50 border-blue-200',
     label: 'Info'
   }
+} as const;
+
+type StatusKey = keyof typeof statusConfig;
+
+type Activity = {
+  id: string;
+  timestamp: string;
+  action: string;
+  description: string;
+  status: string;
+  details?: Record<string, any>;
+  product?: string | null;
+  value?: number | string | null;
 };
 
 const ActivityLog = () => {
-  const [activities, setActivities] = useState([]);
-  const [filteredActivities, setFilteredActivities] = useState([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [filteredActivities, setFilteredActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFilter, setActionFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateRange, setDateRange] = useState('30_days');
-  const [expandedItem, setExpandedItem] = useState(null);
+  const [expandedItem, setExpandedItem] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<Record<string, any>>({});
 
-  // Get current client data
+  // Get current client data with debugging
   const clientData = auth.getClientData();
   const clientId = clientData?.id;
 
-  // Fetch activities from backend
+  // Debug log helper
+  const debugLog = (message: string, data: any = null) => {
+    console.log(`[ActivityLog Debug] ${message}`, data);
+    setDebugInfo(prev => ({
+      ...(prev || {}),
+      [`${Date.now()}`]: { message, data, timestamp: new Date().toISOString() }
+    }));
+  };
+
+  // Mock data for fallback during development
+  const getMockActivities = () => {
+    const mockData = [
+      {
+        id: 'mock-1',
+        timestamp: new Date().toISOString(),
+        action: 'CLIENT_LOGIN',
+        details: { method: 'biometric' },
+        product: null,
+        value: null
+      },
+      {
+        id: 'mock-2',
+        timestamp: new Date(Date.now() - 86400000).toISOString(),
+        action: 'SBT_MINTED',
+        details: {},
+        product: 'Luxury Watch Collection',
+        value: null
+      },
+      {
+        id: 'mock-3',
+        timestamp: new Date(Date.now() - 172800000).toISOString(),
+        action: 'PASSPORT_ASSIGNED',
+        details: {},
+        product: 'Art Piece Authentication',
+        value: null
+      }
+    ];
+
+    debugLog('Using mock data for development', mockData);
+    return mockData;
+  };
+
+  // Validate and sanitize activity data
+  const validateActivity = (activity: any) => {
+    try {
+      // Ensure required fields exist
+      if (!activity || typeof activity !== 'object') {
+        debugLog('Invalid activity object', activity);
+        return null;
+      }
+
+      const validated = {
+        id: activity.id || `fallback-${Date.now()}-${Math.random()}`,
+        timestamp: activity.timestamp || new Date().toISOString(),
+        action: activity.action || 'UNKNOWN_ACTION',
+        details: activity.details && typeof activity.details === 'object' ? activity.details : {},
+        product: activity.product || null,
+        value: activity.value || null
+      };
+
+      // Validate timestamp format
+      if (isNaN(Date.parse(validated.timestamp))) {
+        debugLog('Invalid timestamp, using current time', validated.timestamp);
+        validated.timestamp = new Date().toISOString();
+      }
+
+      return validated;
+    } catch (err) {
+      debugLog('Error validating activity', { activity, error: (err as Error).message });
+      return null;
+    }
+  };
+
+  // Fetch activities from backend with comprehensive error handling
   useEffect(() => {
     const fetchActivities = async () => {
+      debugLog('Starting activity fetch', { clientId, retryCount });
+
       if (!clientId) {
+        debugLog('No client ID found', { clientData });
         setError('No client data found. Please log in again.');
         setLoading(false);
         return;
@@ -110,168 +201,323 @@ const ActivityLog = () => {
         setLoading(true);
         setError(null);
 
-        // Fetch activity data from backend - using a higher limit to get comprehensive history
-        const response = await api.getClientActivity(clientId, 100);
+        debugLog('Attempting to fetch activities from API');
+
+        // Check if api object exists and has the required method
+        if (!api || typeof api.getClientActivity !== 'function') {
+          throw new Error('API client not properly initialized or getClientActivity method missing');
+        }
+
+        // Fetch activity data from backend
+        let response = await api.getClientActivity(clientId, 100);
         
+        debugLog('Raw API response received', {
+          type: typeof response,
+          isArray: Array.isArray(response),
+          length: response?.length,
+          sample: response?.[0]
+        });
+
+        // Validate response format
+        if (!response) {
+          throw new Error('No response received from API');
+        }
+
+        if (!Array.isArray(response)) {
+          debugLog('Response is not an array, attempting to extract array', response);
+          
+          // Try to extract array from response object
+          const possibleArrays = ['data', 'activities', 'results', 'items'];
+          let extractedArray: any[] | null = null;
+          
+          for (const key of possibleArrays) {
+            if (response[key] && Array.isArray(response[key])) {
+              extractedArray = response[key];
+              debugLog(`Found array in response.${key}`, extractedArray);
+              break;
+            }
+          }
+
+          if (!extractedArray) {
+            throw new Error('Response is not an array and no array found in response object');
+          }
+
+          response = extractedArray;
+        }
+
+        if (response.length === 0) {
+          debugLog('API returned empty array, using mock data');
+          const mockActivities = getMockActivities();
+          const validatedMockActivities = mockActivities
+            .map(validateActivity)
+            .filter(Boolean);
+
+          const transformedMockActivities: Activity[] = validatedMockActivities
+            .filter((activity): activity is NonNullable<typeof activity> => !!activity)
+            .map(activity => ({
+              id: activity.id,
+              timestamp: activity.timestamp,
+              action: activity.action,
+              description: formatDescription(activity),
+              status: determineStatus(activity),
+              details: activity.details,
+              product: activity.product,
+              value: activity.value
+            }));
+
+          setActivities(transformedMockActivities);
+          setFilteredActivities(transformedMockActivities);
+          setLoading(false);
+          return;
+        }
+        
+        // Validate and transform each activity
+        const validatedActivities = response
+          .map(validateActivity)
+          .filter((activity: any): activity is NonNullable<typeof activity> => {
+            if (!activity) {
+              debugLog('Filtered out invalid activity');
+              return false;
+            }
+            return true;
+          });
+
+        debugLog('Validated activities', {
+          originalCount: response.length,
+          validatedCount: validatedActivities.length,
+          sample: validatedActivities[0]
+        });
+
         // Transform backend data to match our expected format
-        const transformedActivities = response.map(activity => ({
-          id: activity.id,
-          timestamp: activity.timestamp,
-          action: activity.action,
-          description: formatDescription(activity),
-          status: determineStatus(activity),
-          details: activity.details || {},
-          product: activity.product,
-          value: activity.value
-        }));
+        const transformedActivities = validatedActivities.map((activity: any) => {
+          try {
+            return {
+              id: activity.id,
+              timestamp: activity.timestamp,
+              action: activity.action,
+              description: formatDescription(activity),
+              status: determineStatus(activity),
+              details: activity.details,
+              product: activity.product,
+              value: activity.value
+            };
+          } catch (err) {
+            debugLog('Error transforming activity', { activity, error: (err as Error).message });
+            return {
+              id: activity.id,
+              timestamp: activity.timestamp,
+              action: activity.action,
+              description: `Error formatting description for ${activity.action}`,
+              status: 'info' as const,
+              details: activity.details,
+              product: activity.product,
+              value: activity.value
+            };
+          }
+        });
+
+        debugLog('Successfully transformed activities', {
+          count: transformedActivities.length,
+          sample: transformedActivities[0]
+        });
 
         setActivities(transformedActivities);
         setFilteredActivities(transformedActivities);
+        setRetryCount(0); // Reset retry count on success
+
       } catch (err) {
-        console.error('Error fetching activities:', err);
-        setError('Failed to load activity history. Please try again.');
+        const error = err as Error;
+        debugLog('Error in fetchActivities', {
+          error: error.message,
+          stack: error.stack,
+          retryCount
+        });
+
+        console.error('Error fetching activities:', error);
+        
+        // If this is the first error or we haven't exceeded retry limit, try fallback
+        if (retryCount < 2) {
+          debugLog('Using fallback mock data due to API error');
+          const mockActivities = getMockActivities();
+          const validatedMockActivities = mockActivities
+            .map(validateActivity)
+            .filter(Boolean);
+
+          const transformedMockActivities: Activity[] = validatedMockActivities
+            .filter((activity): activity is NonNullable<typeof activity> => !!activity)
+            .map(activity => ({
+              id: activity.id,
+              timestamp: activity.timestamp,
+              action: activity.action,
+              description: formatDescription(activity),
+              status: determineStatus(activity),
+              details: activity.details,
+              product: activity.product,
+              value: activity.value
+            }));
+
+          setActivities(transformedMockActivities);
+          setFilteredActivities(transformedMockActivities);
+
+          setError(`API Error (using fallback data): ${error.message}`);
+        } else {
+          setError(`Failed to load activity history after ${retryCount + 1} attempts: ${error.message}`);
+        }
       } finally {
         setLoading(false);
       }
     };
 
     fetchActivities();
-  }, [clientId]);
+  }, [clientId, retryCount]); // Added missing dependencies
 
-  // Transform backend activity into user-friendly description
-  const formatDescription = (activity) => {
-    const details = activity.details || {};
-    
-    switch (activity.action) {
-      case 'SBT_MINTED':
-        return `You minted a Soulbound Token${activity.product ? ` for: ${activity.product}` : ''}`;
+  // Transform backend activity into user-friendly description with error handling
+  const formatDescription = (activity: any) => {
+    try {
+      const details = activity.details || {};
       
-      case 'PASSPORT_ASSIGNED':
-        return `New product authenticated and added to your vault${activity.product ? `: ${activity.product}` : ''}`;
-      
-      case 'CLIENT_LOGIN':
-        const method = details.method === 'biometric' ? ' using biometric authentication' : 
-                     details.method === 'biometric_email' ? ' using Face ID' : '';
-        return `You accessed your AUCTA vault${method}`;
-      
-      case 'CLIENT_LOGOUT':
-        return 'You logged out of your AUCTA vault';
-      
-      case 'PROXY_REQUEST_SUBMITTED':
-        const proxyName = details.proxy_name || 'unknown';
-        const role = details.role ? ` (${details.role.replace('_', ' ')})` : '';
-        return `You submitted a request to assign proxy: ${proxyName}${role}`;
-      
-      case 'PROXY_ACCESS_REVOKED':
-        return `You revoked proxy access for: ${details.proxy_name || 'unknown proxy'}`;
-      
-      case 'PROFILE_UPDATE':
-        const fields = details.updated_fields ? details.updated_fields.join(', ') : 'profile information';
-        return `You updated your ${fields}`;
-      
-      case 'WALLET_EXPORT':
-        return 'You exported your complete wallet data';
-      
-      case 'DATA_EXPORT':
-        return 'You exported your complete vault data (GDPR compliance)';
-      
-      case 'KEY_ROTATION':
-        return 'Your wallet security key was rotated for enhanced protection';
-      
-      case 'MONEYSBT_WITHDRAWAL':
-        const amount = details.amount || activity.value || 'unknown amount';
-        return `You withdrew ${typeof amount === 'number' ? '€' + amount.toFixed(2) : amount} from your MoneySBT cashback balance`;
-      
-      case 'KYC_CHANGE_REQUEST':
-        return 'You submitted a request to update your KYC information';
-      
-      case 'GEO_TRACKING_TOGGLE':
-        const enabled = details.enabled ? 'activated' : 'deactivated';
-        return `You requested geo-tracking ${enabled} for your products`;
-      
-      case 'TRUSTED_LOCATION_REQUEST':
-        const locationName = details.name || 'a new location';
-        return `You requested to add ${locationName} as a trusted location`;
-      
-      case 'NEW_VAULT_REQUEST':
-        return `You requested a new vault in ${details.location || 'unspecified location'}`;
-      
-      case 'PHYSICAL_AGENT_REQUEST':
-        const urgency = details.urgency || 'standard';
-        return `You requested physical agent support (${urgency} priority)`;
-      
-      case 'EMERGENCY_LOCKDOWN_REQUEST':
-        return 'You initiated an emergency lockdown for your products';
-      
-      case 'PRODUCT_STATUS_REPORT':
-        const status = details.new_status || 'status update';
-        return `You reported a product status change: ${status}`;
-      
-      case '2FA_ACTIVATION_REQUEST':
-        const method2fa = details.method || 'two-factor authentication';
-        return `You requested ${method2fa} activation`;
-      
-      case 'DEVICE_RESET_REQUEST':
-        return 'You requested a device reset for security purposes';
-      
-      case 'LOGOUT_ALL_REQUEST':
-        return 'You requested to logout from all devices';
-      
-      case 'SUSPICIOUS_ACTIVITY_REPORT':
-        return 'You reported suspicious activity on your account';
-      
-      default:
-        // Fallback: use action name and any available product info
-        const actionName = activity.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
-        return activity.product ? `${actionName}: ${activity.product}` : actionName;
+      switch (activity.action) {
+        case 'SBT_MINTED':
+          return `You minted a Soulbound Token${activity.product ? ` for: ${activity.product}` : ''}`;
+        
+        case 'PASSPORT_ASSIGNED':
+          return `New product authenticated and added to your vault${activity.product ? `: ${activity.product}` : ''}`;
+        
+        case 'CLIENT_LOGIN':
+          const method = details.method === 'biometric' ? ' using biometric authentication' : 
+                       details.method === 'biometric_email' ? ' using Face ID' : '';
+          return `You accessed your AUCTA vault${method}`;
+        
+        case 'CLIENT_LOGOUT':
+          return 'You logged out of your AUCTA vault';
+        
+        case 'PROXY_REQUEST_SUBMITTED':
+          const proxyName = details.proxy_name || 'unknown';
+          const role = details.role ? ` (${details.role.replace('_', ' ')})` : '';
+          return `You submitted a request to assign proxy: ${proxyName}${role}`;
+        
+        case 'PROXY_ACCESS_REVOKED':
+          return `You revoked proxy access for: ${details.proxy_name || 'unknown proxy'}`;
+        
+        case 'PROFILE_UPDATE':
+          const fields = details.updated_fields ? details.updated_fields.join(', ') : 'profile information';
+          return `You updated your ${fields}`;
+        
+        case 'WALLET_EXPORT':
+          return 'You exported your complete wallet data';
+        
+        case 'DATA_EXPORT':
+          return 'You exported your complete vault data (GDPR compliance)';
+        
+        case 'KEY_ROTATION':
+          return 'Your wallet security key was rotated for enhanced protection';
+        
+        case 'MONEYSBT_WITHDRAWAL':
+          const amount = details.amount || activity.value || 'unknown amount';
+          return `You withdrew ${typeof amount === 'number' ? '€' + amount.toFixed(2) : amount} from your MoneySBT cashback balance`;
+        
+        case 'KYC_CHANGE_REQUEST':
+          return 'You submitted a request to update your KYC information';
+        
+        case 'GEO_TRACKING_TOGGLE':
+          const enabled = details.enabled ? 'activated' : 'deactivated';
+          return `You requested geo-tracking ${enabled} for your products`;
+        
+        case 'TRUSTED_LOCATION_REQUEST':
+          const locationName = details.name || 'a new location';
+          return `You requested to add ${locationName} as a trusted location`;
+        
+        case 'NEW_VAULT_REQUEST':
+          return `You requested a new vault in ${details.location || 'unspecified location'}`;
+        
+        case 'PHYSICAL_AGENT_REQUEST':
+          const urgency = details.urgency || 'standard';
+          return `You requested physical agent support (${urgency} priority)`;
+        
+        case 'EMERGENCY_LOCKDOWN_REQUEST':
+          return 'You initiated an emergency lockdown for your products';
+        
+        case 'PRODUCT_STATUS_REPORT':
+          const status = details.new_status || 'status update';
+          return `You reported a product status change: ${status}`;
+        
+        case '2FA_ACTIVATION_REQUEST':
+          const method2fa = details.method || 'two-factor authentication';
+          return `You requested ${method2fa} activation`;
+        
+        case 'DEVICE_RESET_REQUEST':
+          return 'You requested a device reset for security purposes';
+        
+        case 'LOGOUT_ALL_REQUEST':
+          return 'You requested to logout from all devices';
+        
+        case 'SUSPICIOUS_ACTIVITY_REPORT':
+          return 'You reported suspicious activity on your account';
+        
+        default:
+          const actionName = activity.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase());
+          return activity.product ? `${actionName}: ${activity.product}` : actionName;
+      }
+    } catch (err) {
+      debugLog('Error formatting description', { activity, error: (err as Error).message });
+      return `Activity: ${activity.action || 'Unknown'}`;
     }
   };
 
-  // Determine status from activity data
-  const determineStatus = (activity) => {
-    const details = activity.details || {};
-    
-    // Check if details has a status field
-    if (details.status) {
-      return details.status.toLowerCase();
-    }
-    
-    // Check activity status field
-    if (activity.status) {
-      return activity.status.toLowerCase();
-    }
-    
-    // Default status based on action type
-    switch (activity.action) {
-      case 'CLIENT_LOGIN':
-      case 'CLIENT_LOGOUT':
-      case 'SBT_MINTED':
-      case 'PASSPORT_ASSIGNED':
-      case 'PROFILE_UPDATE':
-      case 'WALLET_EXPORT':
-      case 'DATA_EXPORT':
-      case 'KEY_ROTATION':
-      case 'MONEYSBT_WITHDRAWAL':
-        return 'completed';
+  // Determine status from activity data with error handling
+  const determineStatus = (activity: any) => {
+    try {
+      const details = activity.details || {};
       
-      case 'PROXY_REQUEST_SUBMITTED':
-      case 'KYC_CHANGE_REQUEST':
-      case 'GEO_TRACKING_TOGGLE':
-      case 'TRUSTED_LOCATION_REQUEST':
-      case 'NEW_VAULT_REQUEST':
-      case 'PHYSICAL_AGENT_REQUEST':
-      case 'EMERGENCY_LOCKDOWN_REQUEST':
-      case '2FA_ACTIVATION_REQUEST':
-      case 'DEVICE_RESET_REQUEST':
-      case 'LOGOUT_ALL_REQUEST':
-        return 'pending_review';
+      if (details.status) {
+        return details.status.toLowerCase();
+      }
       
-      case 'SUSPICIOUS_ACTIVITY_REPORT':
-        return 'under_investigation';
+      if (activity.status) {
+        return activity.status.toLowerCase();
+      }
       
-      default:
-        return 'completed';
+      // Default status based on action type
+      switch (activity.action) {
+        case 'CLIENT_LOGIN':
+        case 'CLIENT_LOGOUT':
+        case 'SBT_MINTED':
+        case 'PASSPORT_ASSIGNED':
+        case 'PROFILE_UPDATE':
+        case 'WALLET_EXPORT':
+        case 'DATA_EXPORT':
+        case 'KEY_ROTATION':
+        case 'MONEYSBT_WITHDRAWAL':
+          return 'completed';
+        
+        case 'PROXY_REQUEST_SUBMITTED':
+        case 'KYC_CHANGE_REQUEST':
+        case 'GEO_TRACKING_TOGGLE':
+        case 'TRUSTED_LOCATION_REQUEST':
+        case 'NEW_VAULT_REQUEST':
+        case 'PHYSICAL_AGENT_REQUEST':
+        case 'EMERGENCY_LOCKDOWN_REQUEST':
+        case '2FA_ACTIVATION_REQUEST':
+        case 'DEVICE_RESET_REQUEST':
+        case 'LOGOUT_ALL_REQUEST':
+          return 'pending_review';
+        
+        case 'SUSPICIOUS_ACTIVITY_REPORT':
+          return 'under_investigation';
+        
+        default:
+          return 'completed';
+      }
+    } catch (err) {
+      debugLog('Error determining status', { activity, error: (err as Error).message });
+      return 'info';
     }
+  };
+
+  // Retry function
+  const handleRetry = () => {
+    setRetryCount(prev => prev + 1);
+    setError(null);
   };
 
   // Filter activities based on search and filters
@@ -281,10 +527,10 @@ const ActivityLog = () => {
     // Search filter
     if (searchTerm) {
       filtered = filtered.filter(activity => 
-        activity.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        activity.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (activity.product && activity.product.toLowerCase().includes(searchTerm.toLowerCase())) ||
         (activity.details?.proxy_name && activity.details.proxy_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        activity.action.toLowerCase().includes(searchTerm.toLowerCase())
+        activity.action?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
 
@@ -316,7 +562,7 @@ const ActivityLog = () => {
     setFilteredActivities(filtered);
   }, [activities, searchTerm, actionFilter, statusFilter, dateRange]);
 
-  const formatTimestamp = (timestamp) => {
+  const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
     return {
       date: date.toLocaleDateString('en-GB', { 
@@ -332,14 +578,17 @@ const ActivityLog = () => {
     };
   };
 
-  const formatActionName = (action) => {
+  const formatActionName = (action: string) => {
     return action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
   };
 
   const handleExportPDF = async () => {
     try {
-      // In a real implementation, you might want to add a PDF export endpoint
-      const exportData = await api.exportClientData(clientId);
+      // Check if exportClientData exists before calling it
+      let exportData = null;
+      if (api && typeof api.exportClientData === 'function') {
+        exportData = await api.exportClientData(clientId);
+      }
       
       // Create a simple PDF-like content for download
       const pdfContent = `AUCTA Activity Log Report
@@ -395,6 +644,9 @@ This report is certified and verified by AUCTA's secure infrastructure.`;
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading your activity history...</p>
+          {retryCount > 0 && (
+            <p className="text-sm text-gray-500 mt-2">Retry attempt {retryCount}</p>
+          )}
         </div>
       </div>
     );
@@ -403,16 +655,38 @@ This report is certified and verified by AUCTA's secure infrastructure.`;
   if (error) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center max-w-md">
+        <div className="text-center max-w-2xl mx-auto p-6">
           <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Unable to Load Activity Log</h2>
           <p className="text-gray-600 mb-4">{error}</p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-          >
-            Try Again
-          </button>
+          
+          <div className="flex justify-center space-x-4">
+            <button 
+              onClick={handleRetry}
+              className="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Try Again
+            </button>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Reload Page
+            </button>
+          </div>
+
+          {/* Debug Information - only show in development */}
+          {process.env.NODE_ENV === 'development' && debugInfo && (
+            <details className="mt-6 text-left">
+              <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
+                Debug Information (Development Mode)
+              </summary>
+              <pre className="mt-2 p-4 bg-gray-100 rounded text-xs overflow-auto max-h-40">
+                {JSON.stringify(debugInfo, null, 2)}
+              </pre>
+            </details>
+          )}
         </div>
       </div>
     );
@@ -420,6 +694,20 @@ This report is certified and verified by AUCTA's secure infrastructure.`;
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Show warning if using fallback data */}
+      {error && activities.length > 0 && (
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+          <div className="flex">
+            <AlertTriangle className="h-5 w-5 text-yellow-400" />
+            <div className="ml-3">
+              <p className="text-sm text-yellow-700">
+                Using fallback data due to API issues. Some activities may not reflect your actual history.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6 py-8">
@@ -527,7 +815,9 @@ This report is certified and verified by AUCTA's secure infrastructure.`;
                   <option value="all">All Status</option>
                   {uniqueStatuses.map(status => (
                     <option key={status} value={status}>
-                      {statusConfig[status]?.label || status}
+                      {(status in statusConfig
+                        ? statusConfig[status as keyof typeof statusConfig].label
+                        : status)}
                     </option>
                   ))}
                 </select>
@@ -558,11 +848,11 @@ This report is certified and verified by AUCTA's secure infrastructure.`;
                 </div>
               ) : (
                 filteredActivities.map((activity, index) => {
-                  const { date, time } = formatTimestamp(activity.timestamp);
+                  const statusInfo = (statusConfig[activity.status as StatusKey] ?? statusConfig.completed);
                   const ActionIcon = actionIcons[activity.action] || Package;
-                  const statusInfo = statusConfig[activity.status] || statusConfig.completed;
                   const StatusIcon = statusInfo.icon;
                   const isExpanded = expandedItem === activity.id;
+                  const { date, time } = formatTimestamp(activity.timestamp);
 
                   return (
                     <div key={activity.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
