@@ -133,12 +133,8 @@ export const api = {
     }),
   
   // Original unprotected vault endpoint
-  getClientVault: (clientId: number) => {
-    return apiCall(`/client/vault/${clientId}`).catch(error => {
-      console.warn(`Vault endpoint not available for client ${clientId}:`, error.message);
-      return [];
-    });
-  },
+  getClientVault: (clientId: number) =>
+    apiCall(`/client/vault/${clientId}`),
 
   // Wallet Management
   getWalletData: (clientId: number) =>
@@ -757,6 +753,104 @@ export const api = {
     }).catch(error => {
       console.warn('Rewards feedback endpoint not available:', error.message);
       throw new Error('Feedback submission is not available yet. Please try again later.');
+    }),
+
+  // =============================================================================
+  // INHERITANCE PLAN ENDPOINTS
+  // =============================================================================
+
+  // Get inheritance plan for a client
+  getInheritancePlan: (clientId: number) =>
+    apiCall(`/client/${clientId}/inheritance-plan`).catch(error => {
+      console.warn('Inheritance plan endpoint not available:', error.message);
+      return [];
+    }),
+
+  // Submit new inheritance request
+  submitInheritanceRequest: (clientId: number, requestData: {
+    request_type: 'immediate' | 'post_mortem' | 'legal_mandate';
+    product_ids: number[];
+    beneficiary: {
+      name: string;
+      email: string;
+      phone?: string;
+      relationship: string;
+      is_existing_proxy?: boolean;
+      proxy_assignment_id?: number;
+    };
+    documents?: Array<{
+      type: string;
+      url: string;
+      name: string;
+    }>;
+  }) =>
+    apiCall(`/client/${clientId}/inheritance-request`, {
+      method: 'POST',
+      body: JSON.stringify(requestData),
+    }),
+
+  // Cancel inheritance request
+  cancelInheritanceRequest: (clientId: number, requestId: number) =>
+    apiCall(`/client/${clientId}/inheritance-request/${requestId}/cancel`, {
+      method: 'PUT',
+    }),
+
+  // Get inheritance-related activity logs
+  getInheritanceActivity: (clientId: number, limit?: number) => {
+    const params = limit ? `?limit=${limit}` : '';
+    return apiCall(`/client/${clientId}/inheritance-activity${params}`);
+  },
+
+  // Request legal review appointment
+  requestInheritanceLegalReview: (clientId: number, reviewData: {
+    inheritance_request_id?: number;
+    appointment_type?: 'physical' | 'virtual';
+    preferred_dates?: string[];
+    notes?: string;
+  }) =>
+    apiCall(`/client/${clientId}/inheritance-legal-review`, {
+      method: 'POST',
+      body: JSON.stringify(reviewData),
+    }),
+
+  // Upload inheritance document
+  uploadInheritanceDocument: async (file: File, documentType: string) => {
+    const formData = new FormData();
+    formData.append('document', file);
+    formData.append('document_type', documentType);
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/upload-inheritance-document`, {
+        method: 'POST',
+        headers: {
+          ...(token && { 'Authorization': `Bearer ${token}` }),
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Upload failed');
+      }
+
+      return data;
+    } catch (error) {
+      console.error('Inheritance document upload error:', error);
+      throw error;
+    }
+  },
+
+  // Admin - Update inheritance request status
+  adminUpdateInheritanceStatus: (requestId: number, status: string, adminNotes?: string) =>
+    apiCall(`/admin/inheritance-request/${requestId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ 
+        status, 
+        admin_notes: adminNotes 
+      }),
     }),
 
 };

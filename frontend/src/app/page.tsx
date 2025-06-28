@@ -66,7 +66,19 @@ export default function ModernHomepage() {
       id: 'sprint-3',
       title: 'Sprint 3',
       subtitle: 'Resale Engine',
-      routes: []
+      routes: [
+        { name: 'Resale Initiate', path: 'sprint-3/resale-initiate' },
+        { name: 'Configure Resale', path: '/sprint-3/resale-configure' },
+        { name: 'Assign Buyer', path: '/sprint-3/resale-assign-buyer' },
+        { name: 'Finalize Resale', path: '/sprint-3/resale-finalize' },
+        { name: 'Resale Summary', path: '/sprint-3/resale-summary' },
+        { name: 'Contract Preview', path: '/sprint-3/resale-contract-preview' },
+        { name: 'Royalty Finalize', path: '/sprint-3/royalty-finalize' },
+        { name: 'Royalty Split Engine', path: '/sprint-3/royalty-split-engine' },
+        { name: 'Resale Traceability', path: '/sprint-3/resale-traceability' },
+        { name: 'Cashback Wallet', path: '/sprint-3/cashback-wallet' },
+        { name: 'Admin Resale Dashboard', path: '/sprint-3/admin-resale-dashboard' }
+      ]
     },
     {
       id: 'sprint-4',

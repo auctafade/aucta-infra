@@ -1,45 +1,216 @@
+// frontend/src/app/sprint-2/profile/page.tsx
 'use client';
 
 import React, { useState, useEffect } from 'react';
 import { User, Mail, Phone, MapPin, Globe, Shield, Download, Edit3, Lock, Check, AlertCircle, X, ChevronRight } from 'lucide-react';
+import { api, auth } from '@/lib/api';
 
 const ProfilePage = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [showChangeRequest, setShowChangeRequest] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [changeRequestText, setChangeRequestText] = useState('');
+  
+  // Initialize with empty profile
   const [profile, setProfile] = useState({
     // Identity (KYC-locked)
-    fullName: 'Tom Holland',
-    dateOfBirth: '1985-03-15',
-    placeOfBirth: 'Geneva, Switzerland',
-    nationality: 'Swiss',
-    clientId: '0x7a9f...3f2d',
-    kycStatus: 'verified',
+    fullName: '',
+    dateOfBirth: '',
+    placeOfBirth: '',
+    nationality: '',
+    clientId: '',
+    kycStatus: 'pending',
     
     // Contact (editable)
-    email: 'tom.holland@example.com',
-    phone: '+41 79 123 4567',
+    email: '',
+    phone: '',
     preferredContact: 'email',
     
     // Address (editable)
-    streetAddress: 'Rue du Rhône 114',
-    zipCode: '1204',
-    city: 'Geneva',
-    country: 'Switzerland',
-    proofOfAddressStatus: 'verified',
+    streetAddress: '',
+    zipCode: '',
+    city: '',
+    country: '',
+    proofOfAddressStatus: 'pending',
     
     // Preferences
     language: 'EN',
     currency: 'EUR',
     enableNotifications: true,
-    allowQrAccess: true
+    allowQrAccess: true,
+    
+    // Stats
+    memberSince: new Date().toISOString(),
+    productCount: 0,
+    totalValue: 0
   });
 
   const [editedProfile, setEditedProfile] = useState(profile);
 
+  useEffect(() => {
+    fetchProfileData();
+  }, []);
+
+  const fetchProfileData = async () => {
+    try {
+      const client = auth.getClientData();
+      if (!client) {
+        console.warn('No client data found');
+        setLoading(false);
+        return;
+      }
+
+      // Fetch full profile data from API
+      const profileData = await api.getClient(client.id);
+      console.log('Profile data from API:', profileData);
+
+      // Parse KYC info for identity fields
+      type KycData = {
+        dateOfBirth?: string;
+        placeOfBirth?: string;
+        nationality?: string;
+        email?: string;
+        phone?: string;
+        streetAddress?: string;
+        zipCode?: string;
+        city?: string;
+        country?: string;
+        [key: string]: any;
+      };
+      let kycData: KycData = {};
+      if (profileData.kyc_info) {
+        try {
+          kycData = typeof profileData.kyc_info === 'string' 
+            ? JSON.parse(profileData.kyc_info) 
+            : profileData.kyc_info;
+        } catch (e) {
+          console.warn('Failed to parse KYC info:', e);
+        }
+      }
+
+      // Map API data to profile structure
+      const mappedProfile = {
+        // Identity (from KYC data)
+        fullName: profileData.full_name || profileData.name || '',
+        dateOfBirth: kycData.dateOfBirth || profileData.date_of_birth || '',
+        placeOfBirth: kycData.placeOfBirth || profileData.place_of_birth || '',
+        nationality: kycData.nationality || profileData.nationality || '',
+        clientId: profileData.wallet_address || client.walletAddress || '',
+        kycStatus: profileData.kyc_status || 'verified',
+        
+        // Contact (editable fields)
+        email: profileData.email || kycData.email || '',
+        phone: profileData.phone || kycData.phone || '',
+        preferredContact: profileData.preferred_contact || 'email',
+        
+        // Address
+        streetAddress: profileData.street_address || kycData.streetAddress || '',
+        zipCode: profileData.zip_code || kycData.zipCode || '',
+        city: profileData.city || kycData.city || '',
+        country: profileData.country || kycData.country || '',
+        proofOfAddressStatus: profileData.proof_of_address_status || 'verified',
+        
+        // Preferences
+        language: profileData.language || 'EN',
+        currency: profileData.currency || 'EUR',
+        enableNotifications: profileData.enable_notifications !== false,
+        allowQrAccess: profileData.allow_qr_access !== false,
+        
+        // Stats
+        memberSince: profileData.created_at || new Date().toISOString(),
+        productCount: profileData.product_count || 0,
+        totalValue: profileData.total_value || 0
+      };
+
+      setProfile(mappedProfile);
+      setEditedProfile(mappedProfile);
+    } catch (error) {
+      console.error('Error fetching profile data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSave = async () => {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setProfile(editedProfile);
-    setIsEditing(false);
+    try {
+      setSaving(true);
+      const client = auth.getClientData();
+      if (!client) {
+        throw new Error('No client data found');
+      }
+
+      // Prepare update data (only editable fields)
+      const updateData = {
+        email: editedProfile.email,
+        phone: editedProfile.phone,
+        preferred_contact: editedProfile.preferredContact,
+        street_address: editedProfile.streetAddress,
+        zip_code: editedProfile.zipCode,
+        city: editedProfile.city,
+        country: editedProfile.country,
+        language: editedProfile.language,
+        currency: editedProfile.currency,
+        enable_notifications: editedProfile.enableNotifications,
+        allow_qr_access: editedProfile.allowQrAccess
+      };
+
+      // Update profile via API
+      await api.updateClientProfile(client.id, updateData);
+      
+      // Update local state
+      setProfile(editedProfile);
+      setIsEditing(false);
+      
+      // Show success message (you could add a toast notification here)
+      console.log('Profile updated successfully');
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      alert('Failed to save profile changes. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleChangeRequest = async () => {
+    try {
+      const client = auth.getClientData();
+      if (!client || !changeRequestText.trim()) {
+        return;
+      }
+
+      await api.submitKycChangeRequest(client.id, changeRequestText);
+      setShowChangeRequest(false);
+      setChangeRequestText('');
+      alert('Your change request has been submitted. Our compliance team will contact you within 24 hours.');
+    } catch (error) {
+      console.error('Error submitting change request:', error);
+      alert('Failed to submit change request. Please try again.');
+    }
+  };
+
+  const handleDownloadData = async () => {
+    try {
+      const client = auth.getClientData();
+      if (!client) return;
+
+      const exportData = await api.exportClientData(client.id);
+      
+      // Create and download JSON file
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `aucta-profile-export-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Failed to export data. Please try again.');
+    }
   };
 
   const getKycStatusIcon = (status: string) => {
@@ -54,6 +225,57 @@ const ProfilePage = () => {
         return null;
     }
   };
+
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'EUR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(value);
+  };
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return '';
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long'
+    });
+  };
+
+  // Get initials for avatar
+  const getInitials = (name: string) => {
+    if (!name) return '??';
+    const parts = name.split(' ');
+    if (parts.length >= 2) {
+      return parts[0][0] + parts[parts.length - 1][0];
+    }
+    return name.slice(0, 2).toUpperCase();
+  };
+
+  if (loading) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '400px'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: '40px',
+            height: '40px',
+            border: '2px solid #e0e0e0',
+            borderTopColor: '#000',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            margin: '0 auto 16px'
+          }} />
+          <p style={{ color: '#666', fontSize: '14px' }}>Loading profile...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -86,13 +308,18 @@ const ProfilePage = () => {
                 marginBottom: '8px',
                 letterSpacing: '-0.02em'
               }}>
-                {profile.fullName}
+                {profile.fullName || 'Loading...'}
               </h1>
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '14px', opacity: 0.9 }}>
-                <span>Client ID: {profile.clientId}</span>
+                <span>Wallet: {profile.clientId ? `${profile.clientId.slice(0, 6)}...${profile.clientId.slice(-4)}` : ''}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
-                  <span>KYC Verified</span>
+                  <div style={{ 
+                    width: '8px', 
+                    height: '8px', 
+                    background: profile.kycStatus === 'verified' ? '#22c55e' : '#f59e0b', 
+                    borderRadius: '50%' 
+                  }} />
+                  <span>KYC {profile.kycStatus}</span>
                 </div>
               </div>
             </div>
@@ -107,7 +334,7 @@ const ProfilePage = () => {
               fontSize: '28px',
               fontWeight: 300
             }}>
-              TH
+              {getInitials(profile.fullName)}
             </div>
           </div>
           
@@ -118,15 +345,15 @@ const ProfilePage = () => {
           }}>
             <div>
               <p style={{ fontSize: '14px', opacity: 0.7, marginBottom: '4px' }}>Member Since</p>
-              <p style={{ fontSize: '24px', fontWeight: 500 }}>January 2024</p>
+              <p style={{ fontSize: '24px', fontWeight: 500 }}>{formatDate(profile.memberSince)}</p>
             </div>
             <div>
               <p style={{ fontSize: '14px', opacity: 0.7, marginBottom: '4px' }}>Products Owned</p>
-              <p style={{ fontSize: '24px', fontWeight: 500 }}>2 Items</p>
+              <p style={{ fontSize: '24px', fontWeight: 500 }}>{profile.productCount} Items</p>
             </div>
             <div>
               <p style={{ fontSize: '14px', opacity: 0.7, marginBottom: '4px' }}>Total Value</p>
-              <p style={{ fontSize: '24px', fontWeight: 500 }}>€4,290</p>
+              <p style={{ fontSize: '24px', fontWeight: 500 }}>{formatCurrency(profile.totalValue)}</p>
             </div>
           </div>
         </div>
@@ -152,8 +379,8 @@ const ProfilePage = () => {
             <h2 style={{ fontSize: '18px', fontWeight: 500, margin: 0 }}>Identity Information</h2>
             <span style={{
               padding: '4px 12px',
-              background: '#f0fdf4',
-              color: '#22c55e',
+              background: profile.kycStatus === 'verified' ? '#f0fdf4' : '#fef3c7',
+              color: profile.kycStatus === 'verified' ? '#22c55e' : '#f59e0b',
               borderRadius: '20px',
               fontSize: '12px',
               fontWeight: 500,
@@ -162,7 +389,7 @@ const ProfilePage = () => {
               gap: '4px'
             }}>
               <Lock size={12} />
-              KYC Verified
+              KYC {profile.kycStatus}
             </span>
           </div>
           {profile.kycStatus === 'verified' && !isEditing && (
@@ -207,7 +434,7 @@ const ProfilePage = () => {
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
-                <span style={{ color: '#333' }}>{profile.fullName}</span>
+                <span style={{ color: '#333' }}>{profile.fullName || 'Not provided'}</span>
                 <Lock size={14} style={{ color: '#999' }} />
               </div>
             </div>
@@ -223,7 +450,9 @@ const ProfilePage = () => {
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
-                <span style={{ color: '#333' }}>{new Date(profile.dateOfBirth).toLocaleDateString()}</span>
+                <span style={{ color: '#333' }}>
+                  {profile.dateOfBirth ? new Date(profile.dateOfBirth).toLocaleDateString() : 'Not provided'}
+                </span>
                 <Lock size={14} style={{ color: '#999' }} />
               </div>
             </div>
@@ -239,7 +468,7 @@ const ProfilePage = () => {
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
-                <span style={{ color: '#333' }}>{profile.placeOfBirth}</span>
+                <span style={{ color: '#333' }}>{profile.placeOfBirth || 'Not provided'}</span>
                 <Lock size={14} style={{ color: '#999' }} />
               </div>
             </div>
@@ -255,7 +484,7 @@ const ProfilePage = () => {
                 justifyContent: 'space-between',
                 alignItems: 'center'
               }}>
-                <span style={{ color: '#333' }}>{profile.nationality}</span>
+                <span style={{ color: '#333' }}>{profile.nationality || 'Not provided'}</span>
                 <Lock size={14} style={{ color: '#999' }} />
               </div>
             </div>
@@ -340,7 +569,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.email}
+                  {profile.email || 'Not provided'}
                 </div>
               )}
             </div>
@@ -372,7 +601,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.phone}
+                  {profile.phone || 'Not provided'}
                 </div>
               )}
             </div>
@@ -435,16 +664,18 @@ const ProfilePage = () => {
         }}>
           <MapPin size={20} style={{ color: '#666' }} />
           <h2 style={{ fontSize: '18px', fontWeight: 500, margin: 0 }}>Address & Residency</h2>
-          <span style={{
-            padding: '4px 12px',
-            background: '#f5f5f5',
-            color: '#666',
-            borderRadius: '20px',
-            fontSize: '12px',
-            fontWeight: 500
-          }}>
-            Proof Verified
-          </span>
+          {profile.proofOfAddressStatus === 'verified' && (
+            <span style={{
+              padding: '4px 12px',
+              background: '#f5f5f5',
+              color: '#666',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: 500
+            }}>
+              Proof Verified
+            </span>
+          )}
         </div>
         
         <div style={{ padding: '24px' }}>
@@ -481,7 +712,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.streetAddress}
+                  {profile.streetAddress || 'Not provided'}
                 </div>
               )}
             </div>
@@ -513,7 +744,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.city}
+                  {profile.city || 'Not provided'}
                 </div>
               )}
             </div>
@@ -545,7 +776,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.zipCode}
+                  {profile.zipCode || 'Not provided'}
                 </div>
               )}
             </div>
@@ -577,7 +808,7 @@ const ProfilePage = () => {
                   borderRadius: '8px',
                   color: '#333'
                 }}>
-                  {profile.country}
+                  {profile.country || 'Not provided'}
                 </div>
               )}
             </div>
@@ -784,25 +1015,26 @@ const ProfilePage = () => {
           </button>
           <button
             onClick={handleSave}
+            disabled={saving}
             style={{
               padding: '14px 24px',
-              background: '#000',
+              background: saving ? '#666' : '#000',
               color: '#fff',
               border: 'none',
               borderRadius: '8px',
               fontSize: '14px',
               fontWeight: 500,
-              cursor: 'pointer',
+              cursor: saving ? 'not-allowed' : 'pointer',
               transition: 'all 0.3s'
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.transform = 'translateY(-2px)';
+              if (!saving) e.currentTarget.style.transform = 'translateY(-2px)';
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.transform = 'translateY(0)';
             }}
           >
-            Save Changes
+            {saving ? 'Saving...' : 'Save Changes'}
           </button>
         </div>
       ) : (
@@ -812,6 +1044,7 @@ const ProfilePage = () => {
           marginBottom: '40px'
         }}>
           <button
+            onClick={handleDownloadData}
             style={{
               padding: '14px 24px',
               background: 'none',
@@ -838,6 +1071,7 @@ const ProfilePage = () => {
             Download My Data
           </button>
           <button
+            onClick={() => window.location.href = '/sprint-2/security'}
             style={{
               padding: '14px 24px',
               background: 'none',
@@ -900,6 +1134,8 @@ const ProfilePage = () => {
               To change KYC-verified information, please describe your request and our compliance team will contact you within 24 hours.
             </p>
             <textarea
+              value={changeRequestText}
+              onChange={(e) => setChangeRequestText(e.target.value)}
               style={{
                 width: '100%',
                 padding: '16px',
@@ -921,7 +1157,10 @@ const ProfilePage = () => {
               marginTop: '24px'
             }}>
               <button
-                onClick={() => setShowChangeRequest(false)}
+                onClick={() => {
+                  setShowChangeRequest(false);
+                  setChangeRequestText('');
+                }}
                 style={{
                   flex: 1,
                   padding: '14px',
@@ -943,10 +1182,7 @@ const ProfilePage = () => {
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  setShowChangeRequest(false);
-                  // Handle request submission
-                }}
+                onClick={handleChangeRequest}
                 style={{
                   flex: 1,
                   padding: '14px',
@@ -982,6 +1218,15 @@ const ProfilePage = () => {
           to {
             opacity: 1;
             transform: translateY(0);
+          }
+        }
+        
+        @keyframes spin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
           }
         }
       `}</style>

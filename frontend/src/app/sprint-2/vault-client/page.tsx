@@ -15,35 +15,82 @@ export default function VaultClient() {
     const fetchVaultData = async () => {
       try {
         const client = auth.getClientData();
-        if (!client) return;
+        if (!client) {
+          console.warn('No client data found');
+          setLoading(false);
+          return;
+        }
         
+        console.log('Client data:', client); // Debug log
         setClientData(client);
         
-        // Fetch products for this client
-        const vaultProducts = await api.getClientVault(client.id);
-        setProducts(vaultProducts);
+        // Check if client has a valid ID
+        if (!client.id) {
+          console.warn('Client has no ID, cannot fetch vault');
+          setProducts([]);
+          setLoading(false);
+          return;
+        }
         
-        // Calculate total value from all products
-        const total = vaultProducts.reduce((sum: number, product: any) => {
-          const metadata = typeof product.metadata === 'string' 
-            ? JSON.parse(product.metadata) 
-            : product.metadata;
+        try {
+          // Try the protected endpoint first (with auth)
+          console.log('Fetching vault for client ID:', client.id);
+          let vaultData;
           
-          // Get the original_price from metadata or the extracted field
-          const price = product.original_price || metadata?.original_price;
-          
-          if (price) {
-            // Remove any currency symbols and parse the number
-            const numericPrice = parseFloat(price.toString().replace(/[^0-9.-]+/g, ''));
-            return sum + (isNaN(numericPrice) ? 0 : numericPrice);
+          try {
+            // First try the protected endpoint
+            vaultData = await api.getClientVaultProtected(client.id);
+            console.log('Protected vault data:', vaultData);
+            
+            // If the protected endpoint returns data with client and products structure
+            if (vaultData && vaultData.products) {
+              setProducts(vaultData.products);
+            } else {
+              // Otherwise treat the response as a direct products array
+              setProducts(Array.isArray(vaultData) ? vaultData : []);
+            }
+          } catch (protectedError) {
+            console.warn('Protected endpoint failed, trying unprotected:', protectedError);
+            // Fall back to unprotected endpoint
+            const unprotectedData = await api.getClientVault(client.id);
+            setProducts(Array.isArray(unprotectedData) ? unprotectedData : []);
           }
           
-          return sum;
-        }, 0);
-        
-        setTotalValue(total);
+          // Calculate total value from all products
+          const productsArray = Array.isArray(vaultData) ? vaultData : (vaultData?.products || []);
+          const total = productsArray.reduce((sum: number, product: any) => {
+            // Parse metadata if it's a string
+            const metadata = typeof product.metadata === 'string' 
+              ? JSON.parse(product.metadata) 
+              : product.metadata;
+            
+            // Get the original_price from various possible locations
+            const price = product.original_price || 
+                         metadata?.original_price || 
+                         metadata?.value ||
+                         product.value;
+            
+            if (price) {
+              // Remove any currency symbols and parse the number
+              const numericPrice = parseFloat(price.toString().replace(/[^0-9.-]+/g, ''));
+              return sum + (isNaN(numericPrice) ? 0 : numericPrice);
+            }
+            
+            return sum;
+          }, 0);
+          
+          setTotalValue(total);
+          console.log('Total vault value:', total);
+        } catch (vaultError) {
+          console.error('Error fetching vault data:', vaultError);
+          // Set empty products array if vault fetch fails
+          setProducts([]);
+          setTotalValue(0);
+        }
       } catch (error) {
-        console.error('Error fetching vault:', error);
+        console.error('Error in fetchVaultData:', error);
+        setProducts([]);
+        setTotalValue(0);
       } finally {
         setLoading(false);
       }
@@ -131,7 +178,7 @@ export default function VaultClient() {
             marginBottom: '16px',
             letterSpacing: '-0.02em'
           }}>
-            Welcome back, {clientData?.name}
+            Welcome back, {clientData?.name || 'User'}
           </h1>
           <p style={{
             fontSize: '18px',
@@ -198,10 +245,19 @@ export default function VaultClient() {
           {products.map((product) => {
             const metadata = typeof product.metadata === 'string' 
               ? JSON.parse(product.metadata) 
-              : product.metadata;
+              : product.metadata || {};
             
-            // Get price from extracted field or metadata
-            const price = product.original_price || metadata?.original_price;
+            // Get price from various possible locations
+            const price = product.original_price || 
+                         metadata?.original_price || 
+                         metadata?.value ||
+                         product.value;
+            
+            // Get image URL with proper formatting
+            const imageUrl = metadata.product_image || metadata.image;
+            const fullImageUrl = imageUrl && !imageUrl.startsWith('http') 
+              ? `http://localhost:4000${imageUrl}`
+              : imageUrl;
             
             return (
               <div
@@ -226,8 +282,8 @@ export default function VaultClient() {
                 {/* Product Image */}
                 <div style={{
                   height: '240px',
-                  background: metadata.product_image 
-                    ? `url(http://localhost:4000${metadata.product_image}) center/cover`
+                  background: fullImageUrl 
+                    ? `url(${fullImageUrl}) center/cover`
                     : 'linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%)',
                   position: 'relative'
                 }}>
@@ -254,14 +310,14 @@ export default function VaultClient() {
                     marginBottom: '8px',
                     letterSpacing: '-0.01em'
                   }}>
-                    {metadata.brand}
+                    {metadata.brand || 'Unknown Brand'}
                   </h3>
                   <p style={{
                     fontSize: '16px',
                     color: '#666',
                     marginBottom: '16px'
                   }}>
-                    {metadata.object_name}
+                    {metadata.object_name || 'Unknown Product'}
                   </p>
 
                   <div style={{

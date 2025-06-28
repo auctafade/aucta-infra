@@ -24,61 +24,7 @@ import {
   ArrowUpRight,
   History
 } from 'lucide-react';
-
-// API functions
-const api = {
-  getWalletData: async (clientId: number) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/wallet`);
-    if (!response.ok) throw new Error('Failed to fetch wallet data');
-    return response.json();
-  },
-  
-  getClientActivity: async (clientId: number, limit = 10) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/activity?limit=${limit}`);
-    if (!response.ok) throw new Error('Failed to fetch activity');
-    return response.json();
-  },
-  
-  getMoneySBTTransactions: async (clientId: number) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/moneysbt/transactions`);
-    if (!response.ok) throw new Error('Failed to fetch MoneySBT transactions');
-    return response.json();
-  },
-  
-  withdrawMoneySBT: async (clientId: number, amount: number) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/moneysbt/withdraw`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount })
-    });
-    if (!response.ok) throw new Error('Failed to withdraw MoneySBT');
-    return response.json();
-  },
-  
-  exportWalletData: async (clientId: number) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/wallet/export`);
-    if (!response.ok) throw new Error('Failed to export wallet data');
-    return response.json();
-  },
-  
-  rotateWalletKey: async (clientId: number) => {
-    const response = await fetch(`http://localhost:4000/client/${clientId}/wallet/rotate-key`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    if (!response.ok) throw new Error('Failed to rotate key');
-    return response.json();
-  }
-};
-
-// Auth helper
-const auth = {
-  getClientData: () => {
-    if (typeof window === 'undefined') return null;
-    const data = localStorage.getItem('clientData');
-    return data ? JSON.parse(data) : null;
-  }
-};
+import { api, auth } from '@/lib/api';
 
 // MoneySBT Popup Component
 const MoneySBTPopup = ({ isOpen, onClose, walletData, clientId, onWithdraw }: any) => {
@@ -467,6 +413,7 @@ export default function WalletDashboard() {
         setRecentActivity(activity);
       } catch (error) {
         console.error('Error fetching wallet data:', error);
+        // Set default data if API fails
         setWalletData({
           walletAddress: '0x742d35Cc6e0c8A4c1F7c',
           walletType: 'Custodial',
