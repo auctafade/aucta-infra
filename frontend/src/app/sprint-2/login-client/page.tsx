@@ -7,9 +7,11 @@ import Link from 'next/link';
 import { Mail, Fingerprint, ArrowRight } from 'lucide-react';
 import Navigation from '@/components/Navigation';
 import { api } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function LoginClient() {
   const router = useRouter();
+  const { login, error: authError } = useAuth();
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
@@ -47,20 +49,19 @@ export default function LoginClient() {
       // Simulate biometric scan animation
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // Call the backend with email
-      const response = await api.biometricLogin(email);
+      // Use the auth context login
+      const result = await login(email);
       
-      localStorage.setItem('authToken', response.token);
-      localStorage.setItem('clientData', JSON.stringify(response.client));
+      if (!result.success) {
+        setError(result.error || 'Authentication failed');
+        setIsScanning(false);
+        setLoading(false);
+      }
+      // If successful, the auth context will handle navigation
       
-      // Success animation before redirect
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      router.push('/sprint-2/vault-client');
     } catch (err: any) {
       setError(err.message || 'Authentication failed. Please check your email.');
       setIsScanning(false);
-    } finally {
       setLoading(false);
     }
   };

@@ -36,8 +36,8 @@ async function apiCall(endpoint: string, options: RequestInit = {}) {
     }
 
     return data;
-  } catch (error) {
-    console.error('API call error:', error);
+  } catch (error: any) {
+    console.error(`API call error for ${endpoint}:`, error?.message || error);
     throw error;
   }
 }
@@ -127,16 +127,26 @@ export const api = {
   
   // Protected vault endpoint (requires auth)
   getClientVaultProtected: (clientId: number) =>
-    apiCall(`/client/vault-protected/${clientId}`),
+    apiCall(`/client/vault-protected/${clientId}`).catch(error => {
+      console.warn('Protected vault endpoint not available:', error.message);
+      return [];
+    }),
   
   // Original unprotected vault endpoint
-  getClientVault: (clientId: number) =>
-    apiCall(`/client/vault/${clientId}`),
+  getClientVault: (clientId: number) => {
+    return apiCall(`/client/vault/${clientId}`).catch(error => {
+      console.warn(`Vault endpoint not available for client ${clientId}:`, error.message);
+      return [];
+    });
+  },
 
   // Wallet Management
   getWalletData: (clientId: number) =>
     apiCall(`/client/${clientId}/wallet`),
 
+  // =============================================================================
+  // ACTIVITY LOG ENDPOINT - ENHANCED VERSION
+  // =============================================================================
   getClientActivity: (clientId: number, limit?: number) => {
     const params = limit ? `?limit=${limit}` : '';
     return apiCall(`/client/${clientId}/activity${params}`);
@@ -450,6 +460,305 @@ export const api = {
       throw error;
     }
   },
+
+  // Transfer Request Endpoints
+  getTransferRequests: (clientId: number) => {
+    return apiCall(`/client/${clientId}/transfer-requests`).catch(error => {
+      // If endpoint doesn't exist yet, return empty array
+      if (error.message?.includes('404') || 
+          error.message?.includes('Not Found') || 
+          error.message?.includes('API call failed: 404') ||
+          error.message?.includes('Cannot GET')) {
+        console.warn('Transfer requests endpoint not implemented yet');
+        return [];
+      }
+      // For other errors, still return empty array to prevent crashes
+      console.warn('Transfer requests API error, returning empty array:', error.message);
+      return [];
+    });
+  },
+
+  // Submit new transfer request
+  submitTransferRequest: (clientId: number, transferData: {
+    product_id: number;
+    reason: 'resale' | 'inheritance' | 'gift' | 'legal_assignment';
+    is_resale: boolean;
+    recipient_wallet_address?: string;
+    recipient_first_name?: string;
+    recipient_last_name?: string;
+    recipient_email?: string;
+  }) =>
+    apiCall(`/client/${clientId}/transfer-request`, {
+      method: 'POST',
+      body: JSON.stringify(transferData),
+    }),
+
+  // Cancel transfer request
+  cancelTransferRequest: (clientId: number, requestId: number) =>
+    apiCall(`/client/${clientId}/transfer-request/${requestId}/cancel`, {
+      method: 'PUT',
+    }),
+
+  // Admin - Update transfer request status
+  adminUpdateTransferStatus: (requestId: number, status: string, adminNotes?: string) =>
+    apiCall(`/admin/transfer-request/${requestId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ 
+        status, 
+        admin_notes: adminNotes 
+      }),
+    }),
+
+  // =============================================================================
+  // QR ACCESS TOKEN MANAGEMENT
+  // =============================================================================
+
+  // Get all QR access tokens for a client
+  getQRAccessTokens: (clientId: number) =>
+    apiCall(`/client/${clientId}/qr-access-tokens`).catch(error => {
+      if (error.message?.includes('404') || 
+          error.message?.includes('Not Found') || 
+          error.message?.includes('API call failed: 404') ||
+          error.message?.includes('Cannot GET')) {
+        console.warn('QR access tokens endpoint not implemented yet');
+        return [];
+      }
+      console.warn('QR access tokens API error, returning empty array:', error.message);
+      return [];
+    }),
+
+  // Create new QR access token
+  createQRAccessToken: (clientId: number, tokenData: {
+    passport_id: number;
+    access_reason: string;
+    validity_duration: string;
+    expires_in: number;
+    authorized_email?: string;
+    authorized_name?: string;
+    usage_type?: 'single' | 'multiple';
+    max_access_count?: number;
+  }) =>
+    apiCall(`/client/${clientId}/qr-access-token`, {
+      method: 'POST',
+      body: JSON.stringify(tokenData),
+    }),
+
+  // Revoke QR access token
+  revokeQRAccessToken: (clientId: number, tokenId: number) =>
+    apiCall(`/client/${clientId}/qr-access-token/${tokenId}/revoke`, {
+      method: 'PUT',
+    }),
+
+  // Verify QR access token (public endpoint - no auth required)
+  verifyQRAccessToken: (token: string) =>
+    apiCall(`/access/verify?token=${encodeURIComponent(token)}`),
+
+  // Get QR access statistics
+  getQRAccessStats: (clientId: number) =>
+    apiCall(`/client/${clientId}/qr-access-stats`).catch(error => {
+      if (error.message?.includes('404') || 
+          error.message?.includes('Not Found') || 
+          error.message?.includes('API call failed: 404') ||
+          error.message?.includes('Cannot GET')) {
+        console.warn('QR access stats endpoint not implemented yet');
+        return { total_tokens: 0, active_tokens: 0, total_accesses: 0 };
+      }
+      console.warn('QR access stats API error, returning default stats:', error.message);
+      return { total_tokens: 0, active_tokens: 0, total_accesses: 0 };
+    }),
+
+  // =============================================================================
+  // VALUATION HISTORY ENDPOINTS
+  // =============================================================================
+
+  // Get valuation history for a client
+  getValuationHistory: (clientId: number) =>
+    apiCall(`/client/${clientId}/valuation-history`).catch(error => {
+      console.warn('Valuation history endpoint not available:', error.message);
+      return [];
+    }),
+
+  // Submit new valuation request
+  submitValuationRequest: (clientId: number, valuationData: {
+    product_id: number;
+    reason?: string;
+    connect_authenticator?: boolean;
+    preferred_region?: string;
+  }) =>
+    apiCall(`/client/${clientId}/valuation-request`, {
+      method: 'POST',
+      body: JSON.stringify(valuationData),
+    }).catch(error => {
+      console.warn('Valuation request endpoint not available:', error.message);
+      throw new Error('Valuation requests are not available yet. Please try again later.');
+    }),
+
+  // Get active valuation requests
+  getValuationRequests: (clientId: number) =>
+    apiCall(`/client/${clientId}/valuation-requests`).catch(error => {
+      console.warn('Valuation requests endpoint not available:', error.message);
+      return [];
+    }),
+
+  // Download valuation certificate
+  downloadValuationCertificate: (clientId: number, valuationId: number) =>
+    apiCall(`/client/${clientId}/valuation-certificate/${valuationId}`).catch(error => {
+      console.warn('Valuation certificate endpoint not available:', error.message);
+      throw new Error('Certificate download is not available yet.');
+    }),
+
+  // =============================================================================
+  // RDS SYSTEM ENDPOINTS
+  // =============================================================================
+
+  // Get rewards subscription status
+  getRewardsSubscription: (clientId: number) => {
+    const endpoint = `/client/${clientId}/rewards/subscription`;
+    console.log('Calling rewards subscription endpoint:', endpoint);
+    return apiCall(endpoint).catch(error => {
+      console.warn('Rewards subscription endpoint failed:', endpoint, error.message);
+      if (error.message?.includes('404') || 
+          error.message?.includes('Not Found') || 
+          error.message?.includes('API call failed: 404') ||
+          error.message?.includes('Cannot GET') ||
+          error.message?.includes('/rewards/subscription')) {
+        console.warn('Rewards subscription endpoint not implemented yet');
+        return { subscribed: false, subscription: null, card: null, totalCashback: 0 };
+      }
+      console.warn('Rewards subscription API error, returning default:', error.message);
+      return { subscribed: false, subscription: null, card: null, totalCashback: 0 };
+    });
+  },
+
+  // Subscribe to rewards program
+  subscribeToRewards: (clientId: number, tier: 'TIER_I' | 'TIER_II' | 'TIER_III') =>
+    apiCall(`/client/${clientId}/rewards/subscribe`, {
+      method: 'POST',
+      body: JSON.stringify({ tier }),
+    }).catch(error => {
+      console.warn('Rewards subscribe endpoint not available:', error.message);
+      throw new Error('Rewards subscription is not available yet. Please try again later.');
+    }),
+
+  // Order physical card
+  orderRewardsCard: (clientId: number, shippingAddress?: {
+    street: string;
+    city: string;
+    state?: string;
+    zip: string;
+    country: string;
+  }) =>
+    apiCall(`/client/${clientId}/rewards/order-card`, {
+      method: 'POST',
+      body: JSON.stringify({ shipping_address: shippingAddress }),
+    }).catch(error => {
+      console.warn('Rewards order card endpoint not available:', error.message);
+      throw new Error('Card ordering is not available yet. Please try again later.');
+    }),
+
+  // Get card status
+  getRewardsCardStatus: (clientId: number) =>
+    apiCall(`/client/${clientId}/rewards/card-status`).catch(error => {
+      console.warn('Rewards card status endpoint not available:', error.message);
+      return null;
+    }),
+
+  // Submit concierge request
+  submitConciergeRequest: (clientId: number, requestData: {
+    request_type: string;
+    subject: string;
+    description: string;
+    priority?: 'low' | 'normal' | 'high' | 'urgent';
+  }) =>
+    apiCall(`/client/${clientId}/rewards/concierge-request`, {
+      method: 'POST',
+      body: JSON.stringify(requestData),
+    }).catch(error => {
+      console.warn('Concierge request endpoint not available:', error.message);
+      throw new Error('Concierge requests are not available yet. Please try again later.');
+    }),
+
+  // Get concierge requests
+  getConciergeRequests: (clientId: number) =>
+    apiCall(`/client/${clientId}/rewards/concierge-requests`).catch(error => {
+      console.warn('Concierge requests endpoint not available:', error.message);
+      return [];
+    }),
+
+  // Update subscription tier
+  updateRewardsSubscription: (clientId: number, newTier: 'TIER_I' | 'TIER_II' | 'TIER_III') =>
+    apiCall(`/client/${clientId}/rewards/update-subscription`, {
+      method: 'PUT',
+      body: JSON.stringify({ new_tier: newTier }),
+    }).catch(error => {
+      console.warn('Update rewards subscription endpoint not available:', error.message);
+      throw new Error('Subscription updates are not available yet. Please try again later.');
+    }),
+
+  // Cancel subscription
+  cancelRewardsSubscription: (clientId: number) =>
+    apiCall(`/client/${clientId}/rewards/cancel-subscription`, {
+      method: 'PUT',
+    }).catch(error => {
+      console.warn('Cancel rewards subscription endpoint not available:', error.message);
+      throw new Error('Subscription cancellation is not available yet. Please try again later.');
+    }),
+
+  // Record benefit usage
+  useRewardsBenefit: (clientId: number, benefitData: {
+    benefit_type: string;
+    location?: string;
+    details?: any;
+  }) =>
+    apiCall(`/client/${clientId}/rewards/use-benefit`, {
+      method: 'POST',
+      body: JSON.stringify(benefitData),
+    }).catch(error => {
+      console.warn('Use rewards benefit endpoint not available:', error.message);
+      throw new Error('Benefit usage tracking is not available yet.');
+    }),
+
+  // Get rewards statistics
+  getRewardsStats: (clientId: number) =>
+    apiCall(`/client/${clientId}/rewards/stats`).catch(error => {
+      console.warn('Rewards stats endpoint not available:', error.message);
+      return { 
+        tier: null, 
+        benefits_used: 0, 
+        total_savings: 0,
+        cashback: { balance: 0, transactionCount: 0 },
+        benefitsUsage: []
+      };
+    }),
+
+  // Apply for family access plan
+  applyForFamilyAccess: (clientId: number, familyMembers: Array<{
+    email: string;
+    name: string;
+    relationship: string;
+  }>) =>
+    apiCall(`/client/${clientId}/rewards/family-access`, {
+      method: 'POST',
+      body: JSON.stringify({ family_members: familyMembers }),
+    }).catch(error => {
+      console.warn('Family access endpoint not available:', error.message);
+      throw new Error('Family access applications are not available yet. Please try again later.');
+    }),
+
+  // Submit service feedback
+  submitRewardsFeedback: (clientId: number, feedbackData: {
+    category: string;
+    rating: number;
+    feedback: string;
+  }) =>
+    apiCall(`/client/${clientId}/rewards/feedback`, {
+      method: 'POST',
+      body: JSON.stringify(feedbackData),
+    }).catch(error => {
+      console.warn('Rewards feedback endpoint not available:', error.message);
+      throw new Error('Feedback submission is not available yet. Please try again later.');
+    }),
+
 };
 
 // Auth helper functions

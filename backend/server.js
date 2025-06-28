@@ -9,6 +9,18 @@ const fs = require('fs');
 const crypto = require('crypto');
 const pool = require('./lib/database');
 const { blockchainSimulator } = require('./blockchain-simulator');
+// Conditionally require optional dependencies
+let PDFDocument, archiver;
+try {
+  PDFDocument = require('pdfkit');
+} catch (e) {
+  console.warn('⚠️  PDFKit not installed - document generation will use fallback');
+}
+try {
+  archiver = require('archiver');
+} catch (e) {
+  console.warn('⚠️  Archiver not installed - ZIP export will use fallback');
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -21,290 +33,16 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 // Create uploads directory if it doesn't exist
 const uploadDir = path.join(__dirname, 'uploads');
 const securityDocsDir = path.join(__dirname, 'uploads/security');
+const documentsDir = path.join(__dirname, 'uploads/documents');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 if (!fs.existsSync(securityDocsDir)) {
   fs.mkdirSync(securityDocsDir, { recursive: true });
 }
-
-// Initialize database tables on startup
-async function initializeDatabase() {
-  try {
-    // Create proxy_assignments table if it doesn't exist
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS proxy_assignments (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
-        proxy_name VARCHAR(255) NOT NULL,
-        proxy_email VARCHAR(255),
-        proxy_wallet_address VARCHAR(255),
-        relationship VARCHAR(50) NOT NULL CHECK (relationship IN ('Family', 'Lawyer', 'Other')),
-        role VARCHAR(50) NOT NULL CHECK (role IN ('viewer', 'legal_proxy', 'inheritance_heir')),
-        country VARCHAR(100) NOT NULL,
-        additional_notes TEXT,
-        id_document_url VARCHAR(500),
-        legal_document_url VARCHAR(500),
-        status VARCHAR(50) DEFAULT 'pending_review' CHECK (status IN ('pending_review', 'active', 'rejected', 'revoked')),
-        admin_notes TEXT,
-        created_proxy_client_id INTEGER REFERENCES clients(id),
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        activated_at TIMESTAMP,
-        revoked_at TIMESTAMP
-      )
-    `);
-
-    // Create notifications table for system messages
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
-        title VARCHAR(255) NOT NULL,
-        message TEXT NOT NULL,
-        type VARCHAR(50) DEFAULT 'info' CHECK (type IN ('info', 'warning', 'success', 'error', 'security')),
-        read BOOLEAN DEFAULT false,
-        action_url VARCHAR(500),
-        metadata JSONB,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at TIMESTAMP
-      )
-    `);
-
-    // Create client_sessions table for advanced session management
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS client_sessions (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
-        session_token VARCHAR(500) NOT NULL UNIQUE,
-        device_info JSONB,
-        ip_address INET,
-        location_info JSONB,
-        last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at TIMESTAMP NOT NULL,
-        is_active BOOLEAN DEFAULT true,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create security_settings table for client-specific security configs
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS security_settings (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE UNIQUE,
-        two_factor_enabled BOOLEAN DEFAULT false,
-        two_factor_method VARCHAR(20) CHECK (two_factor_method IN ('sms', 'email', 'authenticator', 'faceid')),
-        geo_tracking_enabled BOOLEAN DEFAULT false,
-        login_notifications BOOLEAN DEFAULT true,
-        suspicious_activity_alerts BOOLEAN DEFAULT true,
-        require_biometric_for_transfers BOOLEAN DEFAULT false,
-        session_timeout_minutes INTEGER DEFAULT 60,
-        max_concurrent_sessions INTEGER DEFAULT 3,
-        trusted_devices JSONB DEFAULT '[]'::jsonb,
-        security_questions JSONB,
-        last_password_change TIMESTAMP,
-        failed_login_attempts INTEGER DEFAULT 0,
-        account_locked_until TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create system_maintenance table for scheduled maintenance windows
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS system_maintenance (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        description TEXT,
-        maintenance_type VARCHAR(50) DEFAULT 'scheduled' CHECK (maintenance_type IN ('scheduled', 'emergency', 'security')),
-        start_time TIMESTAMP NOT NULL,
-        end_time TIMESTAMP NOT NULL,
-        affected_services JSONB DEFAULT '[]'::jsonb,
-        status VARCHAR(50) DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'in_progress', 'completed', 'cancelled')),
-        notify_clients BOOLEAN DEFAULT true,
-        created_by VARCHAR(100),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create audit_trail table for enhanced security auditing
-    // Create blockchain_transactions table for detailed SBT tracking
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS blockchain_transactions (
-        id SERIAL PRIMARY KEY,
-        passport_id INTEGER REFERENCES passports(id),
-        client_id INTEGER REFERENCES clients(id),
-        transaction_hash VARCHAR(66) NOT NULL UNIQUE,
-        transaction_type VARCHAR(50) NOT NULL CHECK (transaction_type IN ('mint', 'transfer', 'burn', 'metadata_update')),
-        from_address VARCHAR(42),
-        to_address VARCHAR(42),
-        token_id VARCHAR(100),
-        gas_used BIGINT,
-        gas_price BIGINT,
-        block_number BIGINT,
-        block_hash VARCHAR(66),
-        confirmation_count INTEGER DEFAULT 0,
-        status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed', 'reverted')),
-        metadata JSONB,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        confirmed_at TIMESTAMP
-      )
-    `);
-
-    // Create product_valuations table for tracking asset values over time
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS product_valuations (
-        id SERIAL PRIMARY KEY,
-        passport_id INTEGER REFERENCES passports(id) ON DELETE CASCADE,
-        valuation_type VARCHAR(50) NOT NULL CHECK (valuation_type IN ('market', 'insurance', 'auction', 'appraisal')),
-        valuation_amount DECIMAL(15,2) NOT NULL,
-        currency VARCHAR(10) DEFAULT 'EUR',
-        valuation_date DATE NOT NULL,
-        appraiser_name VARCHAR(255),
-        appraiser_license VARCHAR(100),
-        methodology TEXT,
-        supporting_documents JSONB DEFAULT '[]'::jsonb,
-        confidence_level VARCHAR(20) CHECK (confidence_level IN ('low', 'medium', 'high', 'certified')),
-        market_conditions TEXT,
-        validity_period_months INTEGER DEFAULT 12,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Create transfer_requests table for secure product transfers
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS transfer_requests (
-        id SERIAL PRIMARY KEY,
-        passport_id INTEGER REFERENCES passports(id),
-        from_client_id INTEGER REFERENCES clients(id),
-        to_client_id INTEGER,
-        to_email VARCHAR(255),
-        to_wallet_address VARCHAR(42),
-        transfer_reason VARCHAR(500),
-        transfer_type VARCHAR(50) DEFAULT 'sale' CHECK (transfer_type IN ('sale', 'gift', 'inheritance', 'legal_transfer', 'insurance_claim')),
-        agreed_value DECIMAL(15,2),
-        currency VARCHAR(10) DEFAULT 'EUR',
-        requires_kyc BOOLEAN DEFAULT true,
-        requires_biometric BOOLEAN DEFAULT true,
-        biometric_confirmed_from BOOLEAN DEFAULT false,
-        biometric_confirmed_to BOOLEAN DEFAULT false,
-        legal_documents JSONB DEFAULT '[]'::jsonb,
-        status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'kyc_required', 'approval_required', 'approved', 'in_progress', 'completed', 'cancelled', 'rejected')),
-        admin_notes TEXT,
-        expires_at TIMESTAMP,
-        initiated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        completed_at TIMESTAMP
-      )
-    `);
-
-    // Create audit_trail table for enhanced security auditing
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS audit_trail (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER REFERENCES clients(id),
-        admin_user VARCHAR(100),
-        action_category VARCHAR(50) NOT NULL,
-        action_type VARCHAR(100) NOT NULL,
-        resource_type VARCHAR(50),
-        resource_id INTEGER,
-        old_values JSONB,
-        new_values JSONB,
-        ip_address INET,
-        user_agent TEXT,
-        risk_level VARCHAR(20) DEFAULT 'low' CHECK (risk_level IN ('low', 'medium', 'high', 'critical')),
-        geolocation JSONB,
-        session_id VARCHAR(255),
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Add missing columns to clients table if they don't exist
-    const clientColumns = [
-      'email VARCHAR(255)',
-      'phone VARCHAR(50)',
-      'preferred_contact VARCHAR(50)',
-      'street_address TEXT',
-      'zip_code VARCHAR(20)',
-      'city VARCHAR(100)',
-      'country VARCHAR(100)',
-      'proof_of_address_status VARCHAR(50) DEFAULT \'pending\'',
-      'language VARCHAR(10) DEFAULT \'en\'',
-      'currency VARCHAR(10) DEFAULT \'EUR\'',
-      'enable_notifications BOOLEAN DEFAULT true',
-      'allow_qr_access BOOLEAN DEFAULT true',
-      'date_of_birth DATE',
-      'place_of_birth VARCHAR(255)',
-      'nationality VARCHAR(100)',
-      'kyc_status VARCHAR(50) DEFAULT \'pending\'',
-      'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-    ];
-
-    for (const column of clientColumns) {
-      const columnName = column.split(' ')[0];
-      try {
-        await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS ${column}`);
-      } catch (err) {
-        // Column might already exist, ignore error
-        console.log(`Column ${columnName} might already exist`);
-      }
-    }
-
-    console.log('✅ Database tables initialized successfully');
-    
-    // Create indexes for better performance
-    await createIndexes();
-    
-    // Initialize default security settings for existing clients
-    await initializeDefaultSecuritySettings();
-    
-  } catch (error) {
-    console.error('❌ Error initializing database:', error);
-  }
+if (!fs.existsSync(documentsDir)) {
+  fs.mkdirSync(documentsDir, { recursive: true });
 }
-
-// Create database indexes for better performance
-async function createIndexes() {
-  const indexes = [
-    'CREATE INDEX IF NOT EXISTS idx_action_logs_client_timestamp ON action_logs(client_id, timestamp DESC)',
-    'CREATE INDEX IF NOT EXISTS idx_action_logs_action ON action_logs(action)',
-    'CREATE INDEX IF NOT EXISTS idx_passports_client ON passports(assigned_client_id)',
-    'CREATE INDEX IF NOT EXISTS idx_passports_status ON passports(status)',
-    'CREATE INDEX IF NOT EXISTS idx_client_sessions_token ON client_sessions(session_token)',
-    'CREATE INDEX IF NOT EXISTS idx_client_sessions_client ON client_sessions(client_id, is_active)',
-    'CREATE INDEX IF NOT EXISTS idx_notifications_client_unread ON notifications(client_id, read)',
-    'CREATE INDEX IF NOT EXISTS idx_blockchain_transactions_hash ON blockchain_transactions(transaction_hash)',
-    'CREATE INDEX IF NOT EXISTS idx_blockchain_transactions_status ON blockchain_transactions(status)',
-    'CREATE INDEX IF NOT EXISTS idx_transfer_requests_status ON transfer_requests(status)',
-    'CREATE INDEX IF NOT EXISTS idx_audit_trail_client_time ON audit_trail(client_id, timestamp DESC)',
-    'CREATE INDEX IF NOT EXISTS idx_audit_trail_risk ON audit_trail(risk_level, timestamp DESC)'
-  ];
-
-  for (const indexQuery of indexes) {
-    try {
-      await pool.query(indexQuery);
-    } catch (err) {
-      console.log('Index might already exist:', err.message);
-    }
-  }
-  console.log('✅ Database indexes created successfully');
-}
-
-// Initialize default security settings for existing clients
-async function initializeDefaultSecuritySettings() {
-  try {
-    await pool.query(`
-      INSERT INTO security_settings (client_id)
-      SELECT id FROM clients 
-      WHERE id NOT IN (SELECT client_id FROM security_settings WHERE client_id IS NOT NULL)
-      ON CONFLICT (client_id) DO NOTHING
-    `);
-    console.log('✅ Default security settings initialized');
-  } catch (error) {
-    console.log('Security settings initialization completed');
-  }
-}
-
-// Initialize database on startup
-initializeDatabase();
 
 // Configure multer for image uploads
 const storage = multer.diskStorage({
@@ -418,147 +156,6 @@ function saveBase64Image(base64Data, prefix = 'image') {
 }
 
 // Helper function to calculate MoneySBT balance (2% cashback system)
-async function logAction(clientId, action, details = {}, options = {}) {
-  const {
-    passportId = null,
-    adminUser = null,
-    riskLevel = 'low',
-    ipAddress = null,
-    userAgent = null,
-    resourceType = null,
-    resourceId = null,
-    oldValues = null,
-    newValues = null
-  } = options;
-
-  try {
-    // Log to action_logs (existing functionality)
-    await pool.query(
-      'INSERT INTO action_logs (client_id, passport_id, action, details) VALUES ($1, $2, $3, $4)',
-      [clientId, passportId, action, details]
-    );
-
-    // Log to audit_trail for enhanced security tracking
-    await pool.query(`
-      INSERT INTO audit_trail (
-        client_id, admin_user, action_category, action_type, 
-        resource_type, resource_id, old_values, new_values,
-        ip_address, user_agent, risk_level, timestamp
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-    `, [
-      clientId,
-      adminUser,
-      action.split('_')[0], // e.g., 'CLIENT' from 'CLIENT_LOGIN'
-      action,
-      resourceType,
-      resourceId,
-      oldValues ? JSON.stringify(oldValues) : null,
-      newValues ? JSON.stringify(newValues) : null,
-      ipAddress,
-      userAgent,
-      riskLevel
-    ]);
-
-    console.log(`📝 Action logged: ${action} for client ${clientId}`);
-  } catch (error) {
-    console.error('Error logging action:', error);
-  }
-}
-
-// Enhanced notification system
-async function createNotification(clientId, title, message, type = 'info', options = {}) {
-  const {
-    actionUrl = null,
-    metadata = {},
-    expiresInDays = 30
-  } = options;
-
-  try {
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + expiresInDays);
-
-    await pool.query(`
-      INSERT INTO notifications (client_id, title, message, type, action_url, metadata, expires_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `, [clientId, title, message, type, actionUrl, JSON.stringify(metadata), expiresAt]);
-
-    console.log(`🔔 Notification created for client ${clientId}: ${title}`);
-  } catch (error) {
-    console.error('Error creating notification:', error);
-  }
-}
-
-// Enhanced session management
-async function createSession(clientId, sessionToken, deviceInfo, ipAddress, locationInfo = {}) {
-  try {
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24); // 24 hour sessions
-
-    await pool.query(`
-      INSERT INTO client_sessions (
-        client_id, session_token, device_info, ip_address, 
-        location_info, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6)
-    `, [
-      clientId,
-      sessionToken,
-      JSON.stringify(deviceInfo),
-      ipAddress,
-      JSON.stringify(locationInfo),
-      expiresAt
-    ]);
-
-    // Cleanup old sessions (keep only last 5 per client)
-    await pool.query(`
-      UPDATE client_sessions 
-      SET is_active = false 
-      WHERE client_id = $1 
-      AND id NOT IN (
-        SELECT id FROM client_sessions 
-        WHERE client_id = $1 AND is_active = true 
-        ORDER BY created_at DESC 
-        LIMIT 5
-      )
-    `, [clientId]);
-
-  } catch (error) {
-    console.error('Error creating session:', error);
-  }
-}
-
-// Risk assessment for activities
-function assessRiskLevel(action, details = {}, clientHistory = {}) {
-  // High-risk activities
-  if ([
-    'EMERGENCY_LOCKDOWN_REQUEST',
-    'SUSPICIOUS_ACTIVITY_REPORT',
-    'PROXY_ACCESS_REVOKED',
-    'TRANSFER_REQUEST_INITIATED'
-  ].includes(action)) {
-    return 'high';
-  }
-
-  // Medium-risk activities
-  if ([
-    'PROXY_REQUEST_SUBMITTED',
-    'SECURITY_UPDATE',
-    'DEVICE_RESET_REQUEST',
-    'PHYSICAL_AGENT_REQUEST'
-  ].includes(action)) {
-    return 'medium';
-  }
-
-  // Critical activities (admin-only or emergency)
-  if ([
-    'ADMIN_OVERRIDE',
-    'SYSTEM_MAINTENANCE',
-    'EMERGENCY_ACCESS'
-  ].includes(action)) {
-    return 'critical';
-  }
-
-  return 'low';
-}
 async function calculateMoneySBTBalance(clientId) {
   try {
     // Get all owned products with their values
@@ -664,6 +261,187 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// =============================================================================
+// DOCUMENT GENERATION HELPERS
+// =============================================================================
+
+// Generate KYC Certificate PDF
+async function generateKYCCertificate(client) {
+  if (!PDFDocument) {
+    // Fallback: create a simple text file
+    const filename = `kyc-certificate-${client.id}-${Date.now()}.txt`;
+    const filepath = path.join(documentsDir, filename);
+    const content = `KYC VERIFICATION CERTIFICATE\n\nClient: ${client.name}\nClient ID: ${client.id}\nWallet Address: ${client.wallet_address}\nVerification Date: ${new Date(client.created_at).toLocaleDateString()}\nCertificate ID: KYC-${client.id}-${Date.now()}`;
+    fs.writeFileSync(filepath, content);
+    return `/uploads/documents/${filename}`;
+  }
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument();
+      const filename = `kyc-certificate-${client.id}-${Date.now()}.pdf`;
+      const filepath = path.join(documentsDir, filename);
+      const stream = fs.createWriteStream(filepath);
+      
+      doc.pipe(stream);
+      
+      // Add content
+      doc.fontSize(24).text('KYC Verification Certificate', { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(12);
+      doc.text(`This certifies that ${client.name} has completed identity verification.`);
+      doc.text(`Client ID: ${client.id}`);
+      doc.text(`Wallet Address: ${client.wallet_address}`);
+      doc.text(`Verification Date: ${new Date(client.created_at).toLocaleDateString()}`);
+      doc.text(`Certificate ID: KYC-${client.id}-${Date.now()}`);
+      
+      doc.end();
+      
+      stream.on('finish', () => {
+        resolve(`/uploads/documents/${filename}`);
+      });
+      
+      stream.on('error', reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Generate Product Passport PDF
+async function generateProductPassport(passport, client) {
+  if (!PDFDocument) {
+    // Fallback: create a simple text file
+    const metadata = typeof passport.metadata === 'string' ? JSON.parse(passport.metadata) : passport.metadata;
+    const filename = `passport-${passport.id}-${Date.now()}.txt`;
+    const filepath = path.join(documentsDir, filename);
+    const content = `DIGITAL PRODUCT PASSPORT\n\nProduct: ${metadata.brand} ${metadata.object_name}\nNFC UID: ${passport.nfc_uid}\nOwner: ${client.name}\nStatus: ${passport.status}\nCreated: ${new Date(passport.created_at).toLocaleDateString()}\nMetadata Hash: ${passport.metadata_hash}`;
+    fs.writeFileSync(filepath, content);
+    return `/uploads/documents/${filename}`;
+  }
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument();
+      const metadata = typeof passport.metadata === 'string' ? JSON.parse(passport.metadata) : passport.metadata;
+      const filename = `passport-${passport.id}-${Date.now()}.pdf`;
+      const filepath = path.join(documentsDir, filename);
+      const stream = fs.createWriteStream(filepath);
+      
+      doc.pipe(stream);
+      
+      // Add content
+      doc.fontSize(24).text('Digital Product Passport', { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(16).text(`${metadata.brand} ${metadata.object_name}`);
+      doc.moveDown();
+      doc.fontSize(12);
+      doc.text(`NFC UID: ${passport.nfc_uid}`);
+      doc.text(`Owner: ${client.name}`);
+      doc.text(`Status: ${passport.status}`);
+      doc.text(`Created: ${new Date(passport.created_at).toLocaleDateString()}`);
+      if (metadata.collection_year) doc.text(`Collection Year: ${metadata.collection_year}`);
+      if (metadata.original_price) doc.text(`Value: ${metadata.original_price}`);
+      doc.moveDown();
+      doc.text(`Metadata Hash: ${passport.metadata_hash}`);
+      
+      doc.end();
+      
+      stream.on('finish', () => {
+        resolve(`/uploads/documents/${filename}`);
+      });
+      
+      stream.on('error', reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Generate Authenticity Certificate PDF
+async function generateAuthenticityertificate(passport) {
+  if (!PDFDocument) {
+    // Fallback: create a simple text file
+    const metadata = typeof passport.metadata === 'string' ? JSON.parse(passport.metadata) : passport.metadata;
+    const filename = `authenticity-${passport.id}-${Date.now()}.txt`;
+    const filepath = path.join(documentsDir, filename);
+    const content = `CERTIFICATE OF AUTHENTICITY\n\n${metadata.brand}\n\nProduct: ${metadata.object_name}\nBrand: ${metadata.brand}\nAuthentication Date: ${new Date().toLocaleDateString()}\nVerification Code: ${passport.nfc_uid}\n\nThis product has been verified and registered on the AUCTA blockchain.`;
+    fs.writeFileSync(filepath, content);
+    return `/uploads/documents/${filename}`;
+  }
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument();
+      const metadata = typeof passport.metadata === 'string' ? JSON.parse(passport.metadata) : passport.metadata;
+      const filename = `authenticity-${passport.id}-${Date.now()}.pdf`;
+      const filepath = path.join(documentsDir, filename);
+      const stream = fs.createWriteStream(filepath);
+      
+      doc.pipe(stream);
+      
+      // Add content
+      doc.fontSize(24).text('Certificate of Authenticity', { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(16).text(metadata.brand, { align: 'center' });
+      doc.moveDown();
+      doc.fontSize(12);
+      doc.text('This certifies that the following product is authentic:');
+      doc.moveDown();
+      doc.text(`Product: ${metadata.object_name}`);
+      doc.text(`Brand: ${metadata.brand}`);
+      doc.text(`Authentication Date: ${new Date().toLocaleDateString()}`);
+      doc.text(`Verification Code: ${passport.nfc_uid}`);
+      doc.moveDown();
+      doc.text('This product has been verified and registered on the AUCTA blockchain.');
+      
+      doc.end();
+      
+      stream.on('finish', () => {
+        resolve(`/uploads/documents/${filename}`);
+      });
+      
+      stream.on('error', reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+// Generate Blockchain Certificate JSON
+async function generateBlockchainCertificate(passport, sbt) {
+  const metadata = typeof passport.metadata === 'string' ? JSON.parse(passport.metadata) : passport.metadata;
+  const filename = `blockchain-${passport.id}-${Date.now()}.json`;
+  const filepath = path.join(documentsDir, filename);
+  
+  const certificateData = {
+    certificate_type: 'AUCTA_BLOCKCHAIN_CERTIFICATE',
+    generated_at: new Date().toISOString(),
+    product: {
+      id: passport.id,
+      nfc_uid: passport.nfc_uid,
+      brand: metadata.brand,
+      name: metadata.object_name,
+      metadata_hash: passport.metadata_hash
+    },
+    blockchain: {
+      sbt_hash: sbt.sbt_hash,
+      transaction_hash: sbt.blockchain_tx_hash,
+      minted_at: sbt.minted_at,
+      network: 'AUCTA Private Chain',
+      status: 'IMMUTABLE'
+    },
+    verification: {
+      url: `https://aucta.io/verify/${sbt.sbt_hash}`,
+      qr_code: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${sbt.sbt_hash}`
+    }
+  };
+  
+  fs.writeFileSync(filepath, JSON.stringify(certificateData, null, 2));
+  
+  return `/uploads/documents/${filename}`;
+}
+
 // Routes
 
 // Health check
@@ -715,46 +493,11 @@ app.post('/client/login', async (req, res) => {
     // For demo, accept any password
     const token = generateAuthToken(client.id);
 
-    // Enhanced login logging with risk assessment
-    const deviceInfo = {
-      userAgent: req.headers['user-agent'] || 'Unknown',
-      ip: req.ip || req.connection.remoteAddress,
-      acceptLanguage: req.headers['accept-language'],
-      timestamp: new Date()
-    };
-
-    const riskLevel = assessRiskLevel('CLIENT_LOGIN', { method: 'credentials' });
-
-    // Log the login action with enhanced details
-    await logAction(client.id, 'CLIENT_LOGIN', { 
-      method: 'credentials', 
-      timestamp: new Date(),
-      device_info: deviceInfo,
-      login_success: true
-    }, {
-      riskLevel: riskLevel,
-      ipAddress: deviceInfo.ip,
-      userAgent: deviceInfo.userAgent
-    });
-
-    // Create session record
-    await createSession(client.id, token, deviceInfo, deviceInfo.ip);
-
-    // Create login notification if enabled
-    const securitySettings = await pool.query(
-      'SELECT login_notifications FROM security_settings WHERE client_id = $1',
-      [client.id]
+    // Log the login action
+    await pool.query(
+      'INSERT INTO action_logs (client_id, action, details) VALUES ($1, $2, $3)',
+      [client.id, 'CLIENT_LOGIN', { method: 'credentials', timestamp: new Date() }]
     );
-
-    if (securitySettings.rows[0]?.login_notifications !== false) {
-      await createNotification(
-        client.id,
-        'New Login Detected',
-        `Your AUCTA vault was accessed from a new device. If this wasn't you, please contact support immediately.`,
-        'security',
-        { metadata: { ip: deviceInfo.ip, userAgent: deviceInfo.userAgent } }
-      );
-    }
 
     // Get client's owned products count
     const passportsResult = await pool.query(
@@ -865,29 +608,15 @@ app.post('/client/biometric-login-email', async (req, res) => {
     // Generate auth token
     const token = generateAuthToken(client.id);
 
-    // Enhanced biometric login logging
-    const deviceInfo = {
-      userAgent: req.headers['user-agent'] || 'Unknown',
-      ip: req.ip || req.connection.remoteAddress,
-      biometricType: 'TouchID/FaceID',
-      timestamp: new Date()
-    };
-
-    // Log the biometric login with enhanced security tracking
-    await logAction(client.id, 'CLIENT_LOGIN', { 
-      method: 'biometric_email', 
-      email: email,
-      timestamp: new Date(),
-      device_info: deviceInfo,
-      login_success: true
-    }, {
-      riskLevel: assessRiskLevel('CLIENT_LOGIN', { method: 'biometric_email' }),
-      ipAddress: deviceInfo.ip,
-      userAgent: deviceInfo.userAgent
-    });
-
-    // Create session record
-    await createSession(client.id, token, deviceInfo, deviceInfo.ip);
+    // Log the biometric login
+    await pool.query(
+      'INSERT INTO action_logs (client_id, action, details) VALUES ($1, $2, $3)',
+      [client.id, 'CLIENT_LOGIN', { 
+        method: 'biometric_email', 
+        email: email,
+        timestamp: new Date() 
+      }]
+    );
 
     // Get client's owned products count
     const passportsResult = await pool.query(
@@ -926,45 +655,275 @@ app.post('/client/biometric-login-email', async (req, res) => {
 });
 
 // =============================================================================
-// ENHANCED NOTIFICATION SYSTEM ENDPOINTS
+// DOCUMENT ENDPOINTS
 // =============================================================================
 
-// Get notifications for a client
-app.get('/client/:clientId/notifications', requireAuth, async (req, res) => {
+// Get or generate all documents for a client
+app.get('/client/:clientId/documents', requireAuth, async (req, res) => {
   try {
     const { clientId } = req.params;
-    const limit = parseInt(req.query.limit) || 50;
-    const unreadOnly = req.query.unread === 'true';
     
+    // Verify client access
     if (parseInt(clientId) !== req.clientId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    let query = `
-      SELECT * FROM notifications 
-      WHERE client_id = $1 
-      AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-    `;
-    let params = [clientId];
+    // Get client details
+    const clientResult = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    if (clientResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+    const client = clientResult.rows[0];
 
-    if (unreadOnly) {
-      query += ' AND read = false';
+    // Get all products
+    const productsResult = await pool.query(
+      `SELECT p.*, s.sbt_hash, s.blockchain_tx_hash, s.minted_at as sbt_minted_at
+       FROM passports p
+       LEFT JOIN sbts s ON p.id = s.passport_id
+       WHERE p.assigned_client_id = $1`,
+      [clientId]
+    );
+
+    // Get proxy assignments
+    const proxyResult = await pool.query(
+      'SELECT * FROM proxy_assignments WHERE client_id = $1 AND status = $2',
+      [clientId, 'active']
+    );
+
+    const documents = {
+      identity: [],
+      products: [],
+      legal: [],
+      blockchain: []
+    };
+
+    // Generate identity documents
+    const kycCertPath = await generateKYCCertificate(client);
+    documents.identity.push({
+      id: `kyc-cert-${client.id}`,
+      name: 'KYC Verification Certificate',
+      type: 'identity',
+      category: 'Official Certificate',
+      path: kycCertPath,
+      size: '156 KB',
+      date: client.created_at,
+      status: 'verified',
+      format: 'PDF'
+    });
+
+    // Generate product documents
+    for (const product of productsResult.rows) {
+      // Product passport
+      const passportPath = await generateProductPassport(product, client);
+      documents.products.push({
+        id: `passport-${product.id}`,
+        name: `Digital Passport - ${product.id}`,
+        type: 'product',
+        productId: product.id,
+        category: 'Product Authentication',
+        path: passportPath,
+        size: '4.2 MB',
+        date: product.created_at,
+        status: 'active',
+        format: 'PDF'
+      });
+
+      // Authenticity certificate
+      const authPath = await generateAuthenticityertificate(product);
+      documents.products.push({
+        id: `auth-cert-${product.id}`,
+        name: `Certificate of Authenticity - ${product.id}`,
+        type: 'product',
+        productId: product.id,
+        category: 'Authenticity',
+        path: authPath,
+        size: '1.8 MB',
+        date: product.created_at,
+        status: 'verified',
+        format: 'PDF'
+      });
+
+      // Blockchain certificate if minted
+      if (product.sbt_hash) {
+        const blockchainPath = await generateBlockchainCertificate(product, {
+          sbt_hash: product.sbt_hash,
+          blockchain_tx_hash: product.blockchain_tx_hash,
+          minted_at: product.sbt_minted_at
+        });
+        
+        documents.blockchain.push({
+          id: `blockchain-${product.id}`,
+          name: `SBT Certificate - ${product.id}`,
+          type: 'blockchain',
+          productId: product.id,
+          category: 'Blockchain Record',
+          path: blockchainPath,
+          size: '89 KB',
+          date: product.sbt_minted_at,
+          status: 'immutable',
+          format: 'JSON',
+          hash: product.sbt_hash,
+          txHash: product.blockchain_tx_hash
+        });
+      }
     }
 
-    query += ' ORDER BY created_at DESC LIMIT $2';
-    params.push(limit);
-
-    const result = await pool.query(query, params);
-
-    res.json({
-      notifications: result.rows,
-      unread_count: result.rows.filter(n => !n.read).length
-    });
+    res.json(documents);
   } catch (error) {
-    console.error('Error fetching notifications:', error);
-    res.status(500).json({ error: 'Failed to fetch notifications' });
+    console.error('Error fetching documents:', error);
+    res.status(500).json({ error: 'Failed to fetch documents' });
   }
 });
+
+// Download specific document
+app.get('/document/download/:documentId', requireAuth, async (req, res) => {
+  try {
+    const { documentId } = req.params;
+    const { clientId } = req.query;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Parse document ID to get type and actual ID
+    const [type, ...idParts] = documentId.split('-');
+    
+    // In production, verify document belongs to client
+    // For now, construct the filename
+    let filename;
+    if (type === 'kyc' && idParts[0] === 'cert') {
+      filename = `kyc-certificate-${clientId}-*.pdf`;
+    } else if (type === 'passport') {
+      filename = `passport-${idParts.join('-')}-*.pdf`;
+    } else if (type === 'auth' && idParts[0] === 'cert') {
+      filename = `authenticity-${idParts.slice(1).join('-')}-*.pdf`;
+    } else if (type === 'blockchain') {
+      filename = `blockchain-${idParts.join('-')}-*.json`;
+    }
+
+    // Find the file
+    const files = fs.readdirSync(documentsDir).filter(f => {
+      const pattern = filename.replace(/\*/g, '.*');
+      return new RegExp(pattern).test(f);
+    });
+
+    if (files.length === 0) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    const filepath = path.join(documentsDir, files[0]);
+    res.download(filepath);
+  } catch (error) {
+    console.error('Error downloading document:', error);
+    res.status(500).json({ error: 'Failed to download document' });
+  }
+});
+
+// Export all documents as ZIP
+app.get('/client/:clientId/documents/export-zip', requireAuth, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!archiver) {
+      return res.status(501).json({ 
+        error: 'ZIP export not available - archiver module not installed',
+        fallback: 'Use individual document downloads instead'
+      });
+    }
+
+    // Get all documents
+    const documentsResponse = await fetch(`http://localhost:${PORT}/client/${clientId}/documents`, {
+      headers: { 'Authorization': req.headers.authorization }
+    });
+    const documents = await documentsResponse.json();
+
+    // Create ZIP
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const zipFilename = `AUCTA_Documents_${clientId}_${Date.now()}.zip`;
+    
+    res.attachment(zipFilename);
+    archive.pipe(res);
+
+    // Add all documents to ZIP
+    const allDocs = [
+      ...documents.identity,
+      ...documents.products,
+      ...documents.legal,
+      ...documents.blockchain
+    ];
+
+    for (const doc of allDocs) {
+      if (doc.path) {
+        const filepath = path.join(__dirname, doc.path);
+        if (fs.existsSync(filepath)) {
+          archive.file(filepath, { name: `${doc.type}/${doc.name}.${doc.format.toLowerCase()}` });
+        }
+      }
+    }
+
+    archive.finalize();
+  } catch (error) {
+    console.error('Error creating ZIP:', error);
+    res.status(500).json({ error: 'Failed to create ZIP export' });
+  }
+});
+
+// Export documents metadata as CSV
+app.get('/client/:clientId/documents/export-csv', requireAuth, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Get all documents
+    const documentsResponse = await fetch(`http://localhost:${PORT}/client/${clientId}/documents`, {
+      headers: { 'Authorization': req.headers.authorization }
+    });
+    const documents = await documentsResponse.json();
+
+    // Create CSV
+    const csvRows = ['Document Name,Type,Category,Status,Date,Size,Format'];
+    
+    const allDocs = [
+      ...documents.identity,
+      ...documents.products,
+      ...documents.legal,
+      ...documents.blockchain
+    ];
+
+    allDocs.forEach(doc => {
+      csvRows.push(
+        `"${doc.name}","${doc.type}","${doc.category}","${doc.status}","${new Date(doc.date).toLocaleDateString()}","${doc.size}","${doc.format}"`
+      );
+    });
+
+    const csvContent = csvRows.join('\n');
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="AUCTA_Documents_Metadata_${Date.now()}.csv"`);
+    res.send(csvContent);
+  } catch (error) {
+    console.error('Error creating CSV:', error);
+    res.status(500).json({ error: 'Failed to create CSV export' });
+  }
+});
+
+// =============================================================================
+// END DOCUMENT ENDPOINTS
+// =============================================================================
+
+// =============================================================================
+// PROXY MANAGEMENT ENDPOINTS
+// =============================================================================
 
 // Get all proxy assignments for a client
 app.get('/client/:clientId/proxy', requireAuth, async (req, res) => {
@@ -1882,7 +1841,7 @@ app.get('/client/:clientId/security/logs', requireAuth, async (req, res) => {
 
     const result = await pool.query(
       `SELECT * FROM action_logs 
-       WHERE client_id = $1 AND (action LIKE '%SECURITY%' OR action LIKE '%REQUEST%')
+       WHERE client_id = $1 AND action LIKE '%SECURITY%' OR action LIKE '%REQUEST%'
        ORDER BY timestamp DESC 
        LIMIT $2`,
       [clientId, limit]
@@ -2100,41 +2059,20 @@ app.post('/client/:clientId/moneysbt/withdraw', async (req, res) => {
       return res.status(400).json({ error: 'Invalid withdrawal amount' });
     }
     
-    // Calculate real MoneySBT balance
     const moneySBTData = await calculateMoneySBTBalance(clientId);
     
     if (amount > moneySBTData.totalBalance) {
       return res.status(400).json({ error: 'Insufficient MoneySBT balance' });
     }
     
-    // Enhanced MoneySBT withdrawal logging
-    await logAction(clientId, 'MONEYSBT_WITHDRAWAL', { 
-      amount: amount,
-      withdrawn_at: new Date().toISOString(),
-      remaining_balance: moneySBTData.totalBalance - amount,
-      withdrawal_method: 'direct',
-      transaction_id: `WITHDRAW-${Date.now()}`
-    }, {
-      resourceType: 'moneysbt_balance',
-      riskLevel: amount > 1000 ? 'medium' : 'low', // Higher amounts get medium risk
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent']
-    });
-
-    // Create notification for withdrawal
-    await createNotification(
-      clientId,
-      'Cashback Withdrawn',
-      `€${amount.toFixed(2)} has been successfully withdrawn from your MoneySBT balance.`,
-      'success',
-      { 
-        actionUrl: `/client/wallet`,
-        metadata: { 
-          amount: amount,
-          remaining_balance: moneySBTData.totalBalance - amount,
-          transaction_id: `WITHDRAW-${Date.now()}`
-        }
-      }
+    // Log the withdrawal
+    await pool.query(
+      'INSERT INTO action_logs (client_id, action, details) VALUES ($1, $2, $3)',
+      [clientId, 'MONEYSBT_WITHDRAWAL', { 
+        amount: amount,
+        withdrawn_at: new Date().toISOString(),
+        remaining_balance: moneySBTData.totalBalance - amount
+      }]
     );
     
     res.json({
@@ -2150,20 +2088,26 @@ app.post('/client/:clientId/moneysbt/withdraw', async (req, res) => {
   }
 });
 
-// Get recent activity for a client
+// =============================================================================
+// ACTIVITY LOG ENDPOINT - ENHANCED FOR FRONTEND
+// =============================================================================
+
+// Get recent activity for a client - ENHANCED VERSION
 app.get('/client/:clientId/activity', async (req, res) => {
   try {
     const { clientId } = req.params;
-    const limit = parseInt(req.query.limit) || 10;
+    const limit = parseInt(req.query.limit) || 100;
     
     const result = await pool.query(
       `SELECT 
         al.*,
         p.metadata->>'brand' as product_brand,
         p.metadata->>'object_name' as product_name,
-        p.metadata->>'original_price' as product_value
+        p.metadata->>'original_price' as product_value,
+        c.name as client_name
       FROM action_logs al
       LEFT JOIN passports p ON al.passport_id = p.id
+      LEFT JOIN clients c ON al.client_id = c.id
       WHERE al.client_id = $1
       ORDER BY al.timestamp DESC
       LIMIT $2`,
@@ -2176,47 +2120,67 @@ app.get('/client/:clientId/activity', async (req, res) => {
       let value = null;
       let status = 'completed';
       
+      // Enhanced product info
+      if (row.product_brand && row.product_name) {
+        product = `${row.product_brand} ${row.product_name}`;
+      } else if (row.details?.proxy_name) {
+        product = row.details.proxy_name;
+      } else if (row.details?.transactionId) {
+        product = `TX: ${row.details.transactionId}`;
+      }
+      
+      // Get value from product or details
+      if (row.product_value) {
+        value = parseFloat(row.product_value.replace(/[^0-9.-]+/g, ''));
+      } else if (row.details?.amount) {
+        value = row.details.amount;
+      }
+      
       // Map database actions to user-friendly names
-      switch (row.action) {
-        case 'SBT_MINTED':
-          action = 'SBT Minted';
-          product = row.product_brand && row.product_name ? `${row.product_brand} ${row.product_name}` : null;
-          if (row.product_value) {
-            value = parseFloat(row.product_value.replace(/[^0-9.-]+/g, ''));
-          }
-          break;
-        case 'PASSPORT_ASSIGNED':
-          action = 'Product Added';
-          product = row.product_brand && row.product_name ? `${row.product_brand} ${row.product_name}` : null;
-          if (row.product_value) {
-            value = parseFloat(row.product_value.replace(/[^0-9.-]+/g, ''));
-          }
-          break;
-        case 'CLIENT_LOGIN':
-          action = 'Vault Access';
-          status = 'info';
-          break;
-        case 'PROFILE_UPDATE':
-          action = 'Profile Updated';
-          status = 'info';
-          break;
-        case 'KEY_ROTATION':
-          action = 'Key Rotated';
-          status = 'info';
-          break;
-        case 'WALLET_EXPORT':
-          action = 'Wallet Exported';
-          status = 'info';
-          break;
-        case 'MONEYSBT_WITHDRAWAL':
-          action = 'Cashback Withdrawn';
-          if (row.details && row.details.amount) {
-            value = row.details.amount;
-          }
-          status = 'completed';
-          break;
-        default:
-          action = row.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+      const actionMappings = {
+        'SBT_MINTED': { display: 'SBT Minted', status: 'completed' },
+        'PASSPORT_ASSIGNED': { display: 'Product Added', status: 'completed' },
+        'CLIENT_LOGIN': { display: 'Vault Access', status: 'info' },
+        'CLIENT_LOGOUT': { display: 'Session Ended', status: 'info' },
+        'PROFILE_UPDATE': { display: 'Profile Updated', status: 'info' },
+        'KEY_ROTATION': { display: 'Key Rotated', status: 'info' },
+        'WALLET_EXPORT': { display: 'Wallet Exported', status: 'info' },
+        'MONEYSBT_WITHDRAWAL': { display: 'Cashback Withdrawn', status: 'completed' },
+        'PROXY_REQUEST_SUBMITTED': { display: 'Proxy Request', status: 'pending' },
+        'PROXY_ACCESS_REVOKED': { display: 'Proxy Revoked', status: 'completed' },
+        'PROXY_STATUS_UPDATED_BY_ADMIN': { display: 'Proxy Status Updated', status: 'info' },
+        'SECURITY_REQUEST': { display: 'Security Request', status: 'pending' },
+        'GEO_TRACKING_TOGGLE': { display: 'Geo-Tracking Updated', status: 'pending' },
+        'TRUSTED_LOCATION_REQUEST': { display: 'Location Request', status: 'pending' },
+        'NEW_VAULT_REQUEST': { display: 'Vault Request', status: 'pending' },
+        'PHYSICAL_AGENT_REQUEST': { display: 'Agent Request', status: 'pending' },
+        'EMERGENCY_LOCKDOWN_REQUEST': { display: 'Emergency Lockdown', status: 'critical' },
+        'PRODUCT_STATUS_REPORT': { display: 'Product Report', status: 'pending' },
+        '2FA_ACTIVATION_REQUEST': { display: '2FA Request', status: 'pending' },
+        'DEVICE_RESET_REQUEST': { display: 'Device Reset', status: 'pending' },
+        'LOGOUT_ALL_REQUEST': { display: 'Logout All Devices', status: 'pending' },
+        'SUSPICIOUS_ACTIVITY_REPORT': { display: 'Suspicious Activity', status: 'critical' },
+        'CLIENT_REGISTERED': { display: 'Account Created', status: 'completed' },
+        'PASSPORT_CREATED': { display: 'Passport Created', status: 'completed' },
+        'DATA_EXPORT': { display: 'Data Exported', status: 'info' }
+      };
+      
+      const mapping = actionMappings[row.action] || { 
+        display: row.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
+        status: 'info'
+      };
+      
+      action = mapping.display;
+      
+      // Override status based on details
+      if (row.details?.status === 'pending' || row.details?.status === 'pending_review') {
+        status = 'pending';
+      } else if (row.details?.status === 'failed' || row.action.includes('FAILED')) {
+        status = 'failed';
+      } else if (row.details?.priority === 'critical' || row.details?.emergency) {
+        status = 'critical';
+      } else {
+        status = mapping.status;
       }
       
       return {
@@ -2959,8 +2923,18 @@ app.get('/client/vault/:clientId', async (req, res) => {
        ORDER BY p.created_at DESC`,
       [clientIdNum]
     );
-    
+
     console.log(`✅ Found ${result.rows.length} products for client ${clientIdNum}`);
+    
+    // Log the first product for debugging
+    if (result.rows.length > 0) {
+      console.log('Sample product:', {
+        id: result.rows[0].id,
+        nfc_uid: result.rows[0].nfc_uid,
+        original_price: result.rows[0].original_price,
+        status: result.rows[0].status
+      });
+    }
     
     res.json(result.rows);
   } catch (error) {
@@ -2977,7 +2951,7 @@ app.get('/assignment/:transactionId', async (req, res) => {
   try {
     const { transactionId } = req.params;
     
-    // Query to find the assignment by transaction ID
+    // Query to find the assignment by transaction ID - FIXED
     const query = `
       SELECT 
         al.details->>'transactionId' as transaction_id,
@@ -3065,7 +3039,7 @@ app.delete('/dev/cleanup', async (req, res) => {
   }
   
   try {
-    await pool.query('TRUNCATE clients, passports, sbts, action_logs, proxy_assignments RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE clients, passports, sbts, action_logs RESTART IDENTITY CASCADE');
     res.json({ success: true, message: 'Test data cleaned' });
   } catch (error) {
     console.error('Error cleaning data:', error);
@@ -3113,345 +3087,320 @@ app.post('/blockchain/start', (req, res) => {
   res.json({ success: true });
 });
 
-// =============================================================================
-// SYSTEM HEALTH & MAINTENANCE ENDPOINTS
-// =============================================================================
-
-// Get system health status
-app.get('/admin/system/health', async (req, res) => {
-  try {
-    const [dbHealth, activeConnections, systemMetrics] = await Promise.all([
-      // Database connectivity check
-      pool.query('SELECT NOW() as timestamp, version() as db_version'),
-      
-      // Active connections count
-      pool.query('SELECT count(*) as active_sessions FROM client_sessions WHERE is_active = true AND expires_at > NOW()'),
-      
-      // System metrics
-      pool.query(`
-        SELECT 
-          (SELECT COUNT(*) FROM clients) as total_clients,
-          (SELECT COUNT(*) FROM passports WHERE status = 'MINTED') as minted_products,
-          (SELECT COUNT(*) FROM client_sessions WHERE is_active = true) as active_sessions,
-          (SELECT COUNT(*) FROM transfer_requests WHERE status = 'pending') as pending_transfers
-      `)
-    ]);
-
-    const healthData = {
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      database: {
-        connected: true,
-        version: dbHealth.rows[0].db_version,
-        timestamp: dbHealth.rows[0].timestamp
-      },
-      metrics: systemMetrics.rows[0],
-      active_sessions: parseInt(activeConnections.rows[0].active_sessions),
-      uptime_hours: Math.floor(process.uptime() / 3600),
-      memory_usage: process.memoryUsage(),
-      node_version: process.version
-    };
-
-    res.json(healthData);
-  } catch (error) {
-    console.error('System health check failed:', error);
-    res.status(500).json({
-      status: 'unhealthy',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Schedule system maintenance
-app.post('/admin/system/maintenance', async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      maintenance_type,
-      start_time,
-      end_time,
-      affected_services,
-      notify_clients
-    } = req.body;
-
-    const maintenanceResult = await pool.query(`
-      INSERT INTO system_maintenance (
-        title, description, maintenance_type, start_time, end_time,
-        affected_services, notify_clients, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *
-    `, [
-      title,
-      description,
-      maintenance_type || 'scheduled',
-      start_time,
-      end_time,
-      JSON.stringify(affected_services || []),
-      notify_clients !== false,
-      req.adminUser || 'system'
-    ]);
-
-    // Notify all clients if requested
-    if (notify_clients !== false) {
-      const clients = await pool.query('SELECT id FROM clients');
-      
-      for (const client of clients.rows) {
-        await createNotification(
-          client.id,
-          `Scheduled Maintenance: ${title}`,
-          description || `System maintenance is scheduled from ${new Date(start_time).toLocaleString()} to ${new Date(end_time).toLocaleString()}.`,
-          'warning',
-          {
-            metadata: {
-              maintenance_id: maintenanceResult.rows[0].id,
-              start_time: start_time,
-              end_time: end_time,
-              affected_services: affected_services
-            },
-            expiresInDays: 1 // Maintenance notifications expire after 1 day
-          }
-        );
-      }
-    }
-
-    res.status(201).json({
-      success: true,
-      maintenance: maintenanceResult.rows[0],
-      clients_notified: notify_clients !== false
-    });
-  } catch (error) {
-    console.error('Error scheduling maintenance:', error);
-    res.status(500).json({ error: 'Failed to schedule maintenance' });
-  }
-});
-
-// Get system maintenance schedule
-app.get('/admin/system/maintenance', async (req, res) => {
-  try {
-    const status = req.query.status || 'scheduled';
-    
-    const maintenanceResult = await pool.query(
-      'SELECT * FROM system_maintenance WHERE status = $1 ORDER BY start_time ASC',
-      [status]
-    );
-
-    res.json(maintenanceResult.rows);
-  } catch (error) {
-    console.error('Error fetching maintenance schedule:', error);
-    res.status(500).json({ error: 'Failed to fetch maintenance schedule' });
-  }
-});
-
-// =============================================================================
-// ENHANCED ADMIN ANALYTICS ENDPOINTS
-// =============================================================================
-
-// Get comprehensive admin analytics
-app.get('/admin/analytics/comprehensive', async (req, res) => {
-  try {
-    const timeframe = req.query.timeframe || '30_days';
-    const intervalClause = timeframe === '24_hours' ? '1 hour' :
-                          timeframe === '7_days' ? '1 day' :
-                          timeframe === '30_days' ? '1 day' :
-                          '1 week';
-
-    const [userGrowth, activityTrends, securityMetrics, financialMetrics, productMetrics] = await Promise.all([
-      // User growth over time
-      pool.query(`
-        SELECT 
-          date_trunc('${intervalClause}', created_at) as period,
-          COUNT(*) as new_clients
-        FROM clients 
-        WHERE created_at > NOW() - INTERVAL '${timeframe.replace('_', ' ')}'
-        GROUP BY period
-        ORDER BY period
-      `),
-      
-      // Activity trends
-      pool.query(`
-        SELECT 
-          date_trunc('${intervalClause}', timestamp) as period,
-          action,
-          COUNT(*) as count
-        FROM action_logs 
-        WHERE timestamp > NOW() - INTERVAL '${timeframe.replace('_', ' ')}'
-        GROUP BY period, action
-        ORDER BY period, count DESC
-      `),
-      
-      // Security metrics
-      pool.query(`
-        SELECT 
-          risk_level,
-          COUNT(*) as count,
-          COUNT(DISTINCT client_id) as unique_clients
-        FROM audit_trail 
-        WHERE timestamp > NOW() - INTERVAL '${timeframe.replace('_', ' ')}'
-        GROUP BY risk_level
-      `),
-      
-      // Financial metrics (MoneySBT)
-      pool.query(`
-        SELECT 
-          COUNT(*) as total_withdrawals,
-          SUM((details->>'amount')::numeric) as total_withdrawn,
-          AVG((details->>'amount')::numeric) as avg_withdrawal
-        FROM action_logs 
-        WHERE action = 'MONEYSBT_WITHDRAWAL'
-        AND timestamp > NOW() - INTERVAL '${timeframe.replace('_', ' ')}'
-      `),
-      
-      // Product metrics
-      pool.query(`
-        SELECT 
-          status,
-          COUNT(*) as count,
-          AVG(CAST(REPLACE(REPLACE(metadata->>'original_price', '€', ''), ',', '') AS NUMERIC)) as avg_value
-        FROM passports 
-        WHERE created_at > NOW() - INTERVAL '${timeframe.replace('_', ' ')}'
-        GROUP BY status
-      `)
-    ]);
-
-    res.json({
-      timeframe: timeframe,
-      generated_at: new Date().toISOString(),
-      user_growth: userGrowth.rows,
-      activity_trends: activityTrends.rows,
-      security_metrics: securityMetrics.rows,
-      financial_metrics: financialMetrics.rows[0] || {},
-      product_metrics: productMetrics.rows
-    });
-  } catch (error) {
-    console.error('Error generating analytics:', error);
-    res.status(500).json({ error: 'Failed to generate analytics' });
-  }
-});
-
-// =============================================================================
-// ENHANCED ERROR HANDLING & MONITORING
-// =============================================================================
-
-// Global error tracking
-let errorCount = 0;
-let lastErrors = [];
-
-const trackError = (error, context = '') => {
-  errorCount++;
-  lastErrors.unshift({
-    timestamp: new Date().toISOString(),
-    error: error.message,
-    stack: error.stack,
-    context: context
-  });
-  
-  // Keep only last 50 errors
-  if (lastErrors.length > 50) {
-    lastErrors = lastErrors.slice(0, 50);
-  }
-  
-  console.error(`🚨 Error #${errorCount} [${context}]:`, error.message);
-};
-
-// Error monitoring endpoint
-app.get('/admin/system/errors', async (req, res) => {
-  try {
-    res.json({
-      total_errors: errorCount,
-      recent_errors: lastErrors.slice(0, 20),
-      error_rate: errorCount / Math.max(1, Math.floor(process.uptime() / 60)), // errors per minute
-      uptime_minutes: Math.floor(process.uptime() / 60)
-    });
-  } catch (error) {
-    trackError(error, 'error_monitoring');
-    res.status(500).json({ error: 'Failed to fetch error data' });
-  }
-});
-
-// Enhanced error handling middleware
-app.use((error, req, res, next) => {
-  trackError(error, `${req.method} ${req.path}`);
-  
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File size too large. Maximum size is 10MB.' });
-    }
-    return res.status(400).json({ error: error.message });
-  } else if (error) {
-    // Log to audit trail for critical errors
-    if (req.clientId) {
-      logAction(req.clientId, 'SYSTEM_ERROR', {
-        error_message: error.message,
-        endpoint: `${req.method} ${req.path}`,
-        timestamp: new Date().toISOString()
-      }, {
-        riskLevel: 'high',
-        ipAddress: req.ip,
-        userAgent: req.headers['user-agent']
-      }).catch(console.error);
-    }
-    
-    return res.status(400).json({ error: error.message });
-  }
-  next();
-});
-
-// Graceful shutdown handling
-process.on('SIGTERM', async () => {
-  console.log('🔄 SIGTERM received. Starting graceful shutdown...');
-  
-  try {
-    // Close database connections
-    await pool.end();
-    console.log('✅ Database connections closed');
-    
-    // Log system shutdown
-    console.log('🛑 AUCTA Backend V2 shut down gracefully');
-    process.exit(0);
-  } catch (error) {
-    console.error('❌ Error during shutdown:', error);
-    process.exit(1);
-  }
-});
-
-process.on('SIGINT', async () => {
-  console.log('\n🔄 SIGINT received. Starting graceful shutdown...');
-  
-  try {
-    await pool.end();
-    console.log('✅ Database connections closed');
-    console.log('🛑 AUCTA Backend V2 shut down gracefully');
-    process.exit(0);
-  } catch (error) {
-    console.error('❌ Error during shutdown:', error);
-    process.exit(1);
-  }
-});
-
-// Unhandled promise rejection handling
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
-  trackError(new Error(`Unhandled Rejection: ${reason}`), 'unhandled_rejection');
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('🚨 Uncaught Exception:', error);
-  trackError(error, 'uncaught_exception');
-  
-  // Give time for logging then exit
-  setTimeout(() => {
-    process.exit(1);
-  }, 1000);
-});
-
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 AUCTA Backend running on http://localhost:${PORT}`);
-  console.log(`📊 Database: PostgreSQL on port ${process.env.DB_PORT || 5432}`);
+  console.log(`📊 Database: PostgreSQL on port ${process.env.DB_PORT || 5433}`);
   console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔐 Security endpoints: ENABLED`);
   console.log(`🔗 Proxy management: ENABLED`);
-  console.log(`📋 Activity logging: ENABLED`);
+  console.log(`📋 Activity logging: ENHANCED`);
+  console.log(`📄 Document generation: ENABLED`);
+});
+// Get all transfer requests for a client
+app.get('/client/:clientId/transfer-requests', requireAuth, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const result = await pool.query(
+      `SELECT 
+        tr.*,
+        p.metadata,
+        p.nfc_uid,
+        p.metadata->>'brand' as brand,
+        p.metadata->>'object_name' as object_name,
+        p.metadata->>'product_image' as product_image,
+        p.metadata->>'original_price' as original_price,
+        c.name as client_name,
+        c.wallet_address as client_wallet
+      FROM transfer_requests tr
+      JOIN passports p ON tr.product_id = p.id
+      JOIN clients c ON tr.client_id = c.id
+      WHERE tr.client_id = $1
+      ORDER BY tr.created_at DESC`,
+      [clientId]
+    );
+
+    console.log(`📋 Found ${result.rows.length} transfer requests for client ${clientId}`);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching transfer requests:', error);
+    res.status(500).json({ error: 'Failed to fetch transfer requests' });
+  }
+});
+
+// Submit new transfer request
+app.post('/client/:clientId/transfer-request', requireAuth, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const {
+      product_id,
+      reason,
+      is_resale,
+      recipient_wallet_address,
+      recipient_first_name,
+      recipient_last_name,
+      recipient_email
+    } = req.body;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Validate required fields
+    if (!product_id || !reason) {
+      return res.status(400).json({ 
+        error: 'Product ID and reason are required' 
+      });
+    }
+
+    // Validate reason
+    const validReasons = ['resale', 'inheritance', 'gift', 'legal_assignment'];
+    if (!validReasons.includes(reason)) {
+      return res.status(400).json({ error: 'Invalid transfer reason' });
+    }
+
+    // Validate recipient info - either wallet OR name/email
+    const hasWallet = !!recipient_wallet_address;
+    const hasNameEmail = !!(recipient_first_name && recipient_last_name && recipient_email);
+    
+    if (!hasWallet && !hasNameEmail) {
+      return res.status(400).json({ 
+        error: 'Either recipient wallet address OR recipient name and email are required' 
+      });
+    }
+
+    // Validate wallet format if provided
+    if (recipient_wallet_address && !/^0x[a-fA-F0-9]{40}$/.test(recipient_wallet_address)) {
+      return res.status(400).json({ error: 'Invalid wallet address format' });
+    }
+
+    // Validate email format if provided
+    if (recipient_email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(recipient_email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+      }
+    }
+
+    // Verify product ownership
+    const productResult = await pool.query(
+      'SELECT * FROM passports WHERE id = $1 AND assigned_client_id = $2',
+      [product_id, clientId]
+    );
+
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Product not found or not owned by client' });
+    }
+
+    const product = productResult.rows[0];
+
+    // Check if product already has pending transfer
+    const existingTransfer = await pool.query(
+      `SELECT id FROM transfer_requests 
+       WHERE product_id = $1 AND status IN ('pending', 'reviewing', 'approved', 'waiting_recipient')`,
+      [product_id]
+    );
+
+    if (existingTransfer.rows.length > 0) {
+      return res.status(409).json({ 
+        error: 'This product already has an active transfer request' 
+      });
+    }
+
+    // Determine initial status
+    let initialStatus = 'pending';
+    if (!recipient_wallet_address && recipient_email) {
+      initialStatus = 'waiting_recipient';
+    }
+
+    // Insert transfer request
+    const result = await pool.query(
+      `INSERT INTO transfer_requests (
+        client_id, product_id, reason, is_resale,
+        recipient_wallet_address, recipient_first_name, 
+        recipient_last_name, recipient_email, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+      RETURNING *`,
+      [
+        clientId, product_id, reason, is_resale || false,
+        recipient_wallet_address, recipient_first_name,
+        recipient_last_name, recipient_email, initialStatus
+      ]
+    );
+
+    // Log the action
+    await pool.query(
+      'INSERT INTO action_logs (client_id, passport_id, action, details) VALUES ($1, $2, $3, $4)',
+      [clientId, product_id, 'TRANSFER_REQUEST_SUBMITTED', {
+        transfer_request_id: result.rows[0].id,
+        reason: reason,
+        is_resale: is_resale || false,
+        recipient_type: recipient_wallet_address ? 'existing_wallet' : 'new_recipient',
+        status: initialStatus,
+        product_info: {
+          brand: product.metadata?.brand,
+          object_name: product.metadata?.object_name,
+          nfc_uid: product.nfc_uid
+        }
+      }]
+    );
+
+    // If recipient email provided without wallet, log invite action
+    if (!recipient_wallet_address && recipient_email) {
+      console.log(`📧 Simulating invite email to: ${recipient_email}`);
+      await pool.query(
+        'INSERT INTO action_logs (client_id, action, details) VALUES ($1, $2, $3)',
+        [clientId, 'TRANSFER_INVITE_SENT', {
+          recipient_email: recipient_email,
+          recipient_name: `${recipient_first_name} ${recipient_last_name}`,
+          transfer_request_id: result.rows[0].id,
+          invite_sent_at: new Date().toISOString()
+        }]
+      );
+    }
+
+    console.log(`✅ Transfer request submitted: Product ${product_id} by client ${clientId}`);
+
+    res.status(201).json({
+      success: true,
+      transfer_request: result.rows[0],
+      message: initialStatus === 'waiting_recipient' 
+        ? 'Transfer request submitted. Recipient will receive an invitation to join AUCTA.'
+        : 'Transfer request submitted for AUCTA review.',
+      requestId: `TRANSFER-${result.rows[0].id}-${Date.now()}`
+    });
+  } catch (error) {
+    console.error('Error submitting transfer request:', error);
+    res.status(500).json({ error: 'Failed to submit transfer request' });
+  }
+});
+
+// Cancel transfer request
+app.put('/client/:clientId/transfer-request/:requestId/cancel', requireAuth, async (req, res) => {
+  try {
+    const { clientId, requestId } = req.params;
+    
+    // Verify client access
+    if (parseInt(clientId) !== req.clientId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    // Check if request exists and belongs to client
+    const requestCheck = await pool.query(
+      'SELECT * FROM transfer_requests WHERE id = $1 AND client_id = $2',
+      [requestId, clientId]
+    );
+
+    if (requestCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Transfer request not found' });
+    }
+
+    const request = requestCheck.rows[0];
+
+    // Only allow cancellation of pending requests
+    if (!['pending', 'waiting_recipient'].includes(request.status)) {
+      return res.status(409).json({ 
+        error: `Cannot cancel transfer request with status: ${request.status}` 
+      });
+    }
+
+    // Update status to cancelled
+    const result = await pool.query(
+      `UPDATE transfer_requests 
+       SET status = 'rejected', admin_notes = 'Cancelled by client', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND client_id = $2 
+       RETURNING *`,
+      [requestId, clientId]
+    );
+
+    // Log the action
+    await pool.query(
+      'INSERT INTO action_logs (client_id, passport_id, action, details) VALUES ($1, $2, $3, $4)',
+      [clientId, request.product_id, 'TRANSFER_REQUEST_CANCELLED', {
+        transfer_request_id: requestId,
+        cancelled_at: new Date().toISOString(),
+        previous_status: request.status
+      }]
+    );
+
+    console.log(`✅ Transfer request cancelled: ${requestId} by client ${clientId}`);
+
+    res.json({
+      success: true,
+      transfer_request: result.rows[0],
+      message: 'Transfer request cancelled successfully'
+    });
+  } catch (error) {
+    console.error('Error cancelling transfer request:', error);
+    res.status(500).json({ error: 'Failed to cancel transfer request' });
+  }
+});
+
+// Admin endpoint - Update transfer request status (for AUCTA staff)
+app.put('/admin/transfer-request/:requestId/status', requireAuth, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { status, admin_notes } = req.body;
+    
+    // TODO: Add admin role verification in production
+    
+    const validStatuses = ['pending', 'reviewing', 'approved', 'rejected', 'completed', 'waiting_recipient'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Get current request info
+    const requestCheck = await pool.query(
+      'SELECT * FROM transfer_requests WHERE id = $1',
+      [requestId]
+    );
+
+    if (requestCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Transfer request not found' });
+    }
+
+    const request = requestCheck.rows[0];
+
+    // Update request status
+    const updateQuery = status === 'completed' 
+      ? `UPDATE transfer_requests 
+         SET status = $1, admin_notes = $2, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3 RETURNING *`
+      : `UPDATE transfer_requests 
+         SET status = $1, admin_notes = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3 RETURNING *`;
+
+    const result = await pool.query(updateQuery, [status, admin_notes, requestId]);
+
+    // Log the admin action
+    await pool.query(
+      'INSERT INTO action_logs (client_id, passport_id, action, details) VALUES ($1, $2, $3, $4)',
+      [request.client_id, request.product_id, 'TRANSFER_STATUS_UPDATED_BY_ADMIN', {
+        transfer_request_id: requestId,
+        old_status: request.status,
+        new_status: status,
+        admin_notes: admin_notes,
+        updated_by_admin: true,
+        updated_at: new Date().toISOString()
+      }]
+    );
+
+    console.log(`✅ Transfer request status updated by admin: ${requestId} -> ${status}`);
+
+    res.json({
+      success: true,
+      transfer_request: result.rows[0],
+      message: `Transfer request ${status}`
+    });
+  } catch (error) {
+    console.error('Error updating transfer request status:', error);
+    res.status(500).json({ error: 'Failed to update transfer request status' });
+  }
 });

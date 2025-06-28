@@ -1,958 +1,656 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Download, FileText, Filter, Search, Shield, CheckCircle, AlertCircle, XCircle, Eye, User, Wallet, Package, Settings, Lock, Globe, LogIn, UserPlus, Key, Archive, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Calendar, Search, Download, CheckCircle, Clock, AlertCircle, FileText, Shield, Package, Users, Settings } from 'lucide-react';
 import { api, auth } from '@/lib/api';
 
-const actionIcons: { [key: string]: React.ComponentType<any> } = {
-  VAULT_ACCESS: Eye,
-  SBT_MINTED: Package,
-  PROXY_REQUEST_SUBMITTED: User,
-  PROXY_ACCESS_REVOKED: User,
-  PROXY_STATUS_UPDATED_BY_ADMIN: User,
-  PROXY_CLIENT_CREATED_BY_ADMIN: UserPlus,
-  PASSPORT_ASSIGNED: Package,
-  PASSPORT_CREATED: Package,
-  PRODUCT_ADDED: Package,
-  DOCUMENT_EXPORT: FileText,
-  WALLET_EXPORT: FileText,
-  DATA_EXPORT: FileText,
-  SECURITY_UPDATE: Shield,
-  KEY_ROTATION: Key,
-  PROFILE_UPDATE: Settings,
-  KYC_CHANGE_REQUEST: Settings,
-  MONEYSBT_WITHDRAWAL: Wallet,
-  GEO_TRACKING_TOGGLE: Globe,
-  TRUSTED_LOCATION_REQUEST: Globe,
-  NEW_VAULT_REQUEST: Archive,
-  PHYSICAL_AGENT_REQUEST: AlertTriangle,
-  EMERGENCY_LOCKDOWN_REQUEST: Lock,
-  PRODUCT_STATUS_REPORT: Package,
-  '2FA_ACTIVATION_REQUEST': Shield,
-  DEVICE_RESET_REQUEST: Settings,
-  LOGOUT_ALL_REQUEST: LogIn,
-  SUSPICIOUS_ACTIVITY_REPORT: AlertTriangle,
-  CLIENT_LOGIN: LogIn,
-  CLIENT_LOGOUT: LogIn,
-  CLIENT_REGISTERED: UserPlus
-};
+// Type definitions
+interface ActivityDetails {
+  status?: string;
+  proxy_name?: string;
+  amount?: number;
+  transactionId?: string;
+}
 
-const statusConfig = {
-  success: { 
-    icon: CheckCircle, 
-    color: 'text-green-600', 
-    bg: 'bg-green-50 border-green-200',
-    label: 'Success'
-  },
-  completed: { 
-    icon: CheckCircle, 
-    color: 'text-green-600', 
-    bg: 'bg-green-50 border-green-200',
-    label: 'Completed'
-  },
-  pending: { 
-    icon: AlertCircle, 
-    color: 'text-yellow-600', 
-    bg: 'bg-yellow-50 border-yellow-200',
-    label: 'Pending'
-  },
-  pending_review: { 
-    icon: AlertCircle, 
-    color: 'text-yellow-600', 
-    bg: 'bg-yellow-50 border-yellow-200',
-    label: 'Under Review'
-  },
-  under_investigation: { 
-    icon: AlertTriangle, 
-    color: 'text-orange-600', 
-    bg: 'bg-orange-50 border-orange-200',
-    label: 'Under Investigation'
-  },
-  failed: { 
-    icon: XCircle, 
-    color: 'text-red-600', 
-    bg: 'bg-red-50 border-red-200',
-    label: 'Failed'
-  },
-  info: { 
-    icon: Eye, 
-    color: 'text-blue-600', 
-    bg: 'bg-blue-50 border-blue-200',
-    label: 'Info'
-  }
-} as const;
-
-type StatusKey = keyof typeof statusConfig;
-
-type Activity = {
-  id: string;
-  timestamp: string;
+interface Activity {
+  id?: string;
+  timestamp: string | number | Date;
   action: string;
-  description: string;
-  status: string;
-  details?: Record<string, any>;
-  product?: string | null;
-  value?: number | string | null;
+  details?: ActivityDetails;
+  product?: string;
+}
+
+interface ClientData {
+  id: string;
+  name: string;
+}
+
+interface StatusBadge {
+  color: string;
+  icon: React.ComponentType<{ size?: number }>;
+  text: string;
+}
+
+// Helper function to format timestamps
+const formatTimestamp = (timestamp: string | number | Date): string => {
+  const date = new Date(timestamp);
+  if (isNaN(date.getTime())) {
+    return 'Invalid Date';
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
 };
 
-const ActivityLog = () => {
+// Helper function to get icon for action type
+const getActionIcon = (action: string) => {
+  const iconMap = {
+    'SBT_MINTED': Package,
+    'PASSPORT_ASSIGNED': Package,
+    'CLIENT_LOGIN': Shield,
+    'CLIENT_LOGOUT': Shield,
+    'PROFILE_UPDATE': Settings,
+    'PROXY_REQUEST_SUBMITTED': Users,
+    'SECURITY_REQUEST': Shield,
+    'WALLET_EXPORT': FileText,
+    'KEY_ROTATION': Shield,
+    'MONEYSBT_WITHDRAWAL': FileText,
+  };
+  
+  // Check for partial matches
+  if (action.includes('PROXY')) return Users;
+  if (action.includes('SECURITY')) return Shield;
+  if (action.includes('PRODUCT')) return Package;
+  
+  return (action in iconMap ? iconMap[action as keyof typeof iconMap] : FileText);
+};
+
+// Helper function to get status badge
+const getStatusBadge = (action: string, details?: ActivityDetails): StatusBadge => {
+  // Determine status based on action type and details
+  if (action.includes('REQUEST') && details?.status === 'pending') {
+    return { color: '#FFA500', icon: Clock, text: 'Pending' };
+  }
+  if (action.includes('FAILED') || action.includes('ERROR')) {
+    return { color: '#DC3545', icon: AlertCircle, text: 'Failed' };
+  }
+  return { color: '#28A745', icon: CheckCircle, text: 'Success' };
+};
+
+// Helper function to format action description
+const formatActionDescription = (action: string, details?: ActivityDetails): string => {
+  const descriptions = {
+    'SBT_MINTED': 'Soulbound Token minted on blockchain',
+    'PASSPORT_ASSIGNED': 'Digital passport assigned to vault',
+    'CLIENT_LOGIN': 'Vault access authenticated',
+    'CLIENT_LOGOUT': 'Session ended securely',
+    'PROFILE_UPDATE': 'Profile information updated',
+    'PROXY_REQUEST_SUBMITTED': 'Proxy authorization requested',
+    'WALLET_EXPORT': 'Wallet data exported',
+    'KEY_ROTATION': 'Security key rotated',
+    'MONEYSBT_WITHDRAWAL': 'Cashback funds withdrawn',
+  };
+  
+  // Add specific details if available
+  let description = descriptions[action as keyof typeof descriptions] || action.replace(/_/g, ' ').toLowerCase();
+  
+  if (details?.proxy_name) {
+    description += ` for ${details.proxy_name}`;
+  }
+  if (details?.amount) {
+    description += ` - €${details.amount}`;
+  }
+  
+  return description;
+};
+
+// Helper function to export data as CSV
+const exportToCSV = (data: Activity[], filename: string): void => {
+  const headers = ['Timestamp', 'Action', 'Description', 'Status', 'Reference'];
+  const csvContent = [
+    headers.join(','),
+    ...data.map(log => {
+      const status = getStatusBadge(log.action, log.details);
+      const description = formatActionDescription(log.action, log.details);
+      const reference = log.product || log.details?.proxy_name || log.details?.transactionId || '-';
+      
+      return [
+        formatTimestamp(log.timestamp),
+        log.action,
+        `"${description}"`,
+        status.text,
+        reference
+      ].join(',');
+    })
+  ].join('\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+};
+
+// Helper function to export data as PDF
+const exportToPDF = (data: Activity[], clientName: string): void => {
+  // Create a simple HTML representation for PDF
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        h1 { font-size: 24px; margin-bottom: 10px; }
+        .subtitle { color: #666; font-size: 14px; margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th { background: #f5f5f5; padding: 12px; text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; }
+        td { padding: 10px; border-bottom: 1px solid #eee; }
+        .status { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; }
+        .status-success { background: #d4edda; color: #155724; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-failed { background: #f8d7da; color: #721c24; }
+      </style>
+    </head>
+    <body>
+      <h1>AUCTA Activity Log</h1>
+      <div class="subtitle">${clientName} - Exported on ${new Date().toLocaleDateString()}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Action</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th>Reference</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.map(log => {
+            const status = getStatusBadge(log.action, log.details);
+            const description = formatActionDescription(log.action, log.details);
+            const reference = log.product || log.details?.proxy_name || log.details?.transactionId || '-';
+            const statusClass = status.text.toLowerCase();
+            
+            return `
+              <tr>
+                <td>${formatTimestamp(log.timestamp)}</td>
+                <td>${log.action.replace(/_/g, ' ')}</td>
+                <td>${description}</td>
+                <td><span class="status status-${statusClass}">${status.text}</span></td>
+                <td>${reference}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `;
+  
+  // Open in new window for printing/saving as PDF
+  const printWindow = window.open('', '_blank');
+  if (printWindow) {
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.print();
+  }
+};
+
+export default function ActivityLog() {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [filteredActivities, setFilteredActivities] = useState<Activity[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [actionFilter, setActionFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [dateRange, setDateRange] = useState('30_days');
-  const [expandedItem, setExpandedItem] = useState<string | null>(null);
-  const [debugInfo, setDebugInfo] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState<boolean>(true);
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
+  const [clientData, setClientData] = useState<ClientData | null>(null);
 
-  // Get current client data with debugging
-  const clientData = auth.getClientData();
-  const clientId = clientData?.id;
-
-  // Debug log helper
-  const debugLog = (message: string, data: any = null) => {
-    console.log(`[ActivityLog Debug] ${message}`, data);
-    setDebugInfo(prev => ({
-      ...(prev || {}),
-      [`${Date.now()}`]: { message, data, timestamp: new Date().toISOString() }
-    }));
-  };
-
-  // Mock data for fallback during development
-  const getMockActivities = () => {
-    const mockData = [
-      {
-        id: 'mock-1',
-        timestamp: new Date().toISOString(),
-        action: 'CLIENT_LOGIN',
-        details: { method: 'biometric' },
-        product: null,
-        value: null
-      },
-      {
-        id: 'mock-2',
-        timestamp: new Date(Date.now() - 86400000).toISOString(),
-        action: 'SBT_MINTED',
-        details: {},
-        product: 'Luxury Watch Collection',
-        value: null
-      },
-      {
-        id: 'mock-3',
-        timestamp: new Date(Date.now() - 172800000).toISOString(),
-        action: 'PASSPORT_ASSIGNED',
-        details: {},
-        product: 'Art Piece Authentication',
-        value: null
-      }
-    ];
-
-    debugLog('Using mock data for development', mockData);
-    return mockData;
-  };
-
-  // Validate and sanitize activity data
-  const validateActivity = (activity: any) => {
-    try {
-      // Ensure required fields exist
-      if (!activity || typeof activity !== 'object') {
-        debugLog('Invalid activity object', activity);
-        return null;
-      }
-
-      const validated = {
-        id: activity.id || `fallback-${Date.now()}-${Math.random()}`,
-        timestamp: activity.timestamp || new Date().toISOString(),
-        action: activity.action || 'UNKNOWN_ACTION',
-        details: activity.details && typeof activity.details === 'object' ? activity.details : {},
-        product: activity.product || null,
-        value: activity.value || null
-      };
-
-      // Validate timestamp format
-      if (isNaN(Date.parse(validated.timestamp))) {
-        debugLog('Invalid timestamp, using current time', validated.timestamp);
-        validated.timestamp = new Date().toISOString();
-      }
-
-      return validated;
-    } catch (err) {
-      debugLog('Error validating activity', { activity, error: (err as Error).message });
-      return null;
-    }
-  };
-
-  // Fetch activities from backend with comprehensive error handling
   useEffect(() => {
-    const fetchActivities = async () => {
-      debugLog('Starting activity fetch', { clientId, retryCount });
+    fetchActivityData();
+  }, []);
 
-      if (!clientId) {
-        debugLog('No client ID found', { clientData });
-        setError('No client data found. Please log in again.');
-        setLoading(false);
-        return;
-      }
-
-      try {
-        setLoading(true);
-        setError(null);
-
-        debugLog('Attempting to fetch activities from API');
-
-        // Check if api object exists and has the required method
-        if (!api || typeof api.getClientActivity !== 'function') {
-          throw new Error('API client not properly initialized or getClientActivity method missing');
-        }
-
-        // Fetch activity data from backend
-        let response = await api.getClientActivity(clientId, 100);
-        
-        debugLog('Raw API response received', {
-          type: typeof response,
-          isArray: Array.isArray(response),
-          length: response?.length,
-          sample: response?.[0]
-        });
-
-        // Validate response format
-        if (!response) {
-          throw new Error('No response received from API');
-        }
-
-        if (!Array.isArray(response)) {
-          debugLog('Response is not an array, attempting to extract array', response);
-          
-          // Try to extract array from response object
-          const possibleArrays = ['data', 'activities', 'results', 'items'];
-          let extractedArray: any[] | null = null;
-          
-          for (const key of possibleArrays) {
-            if (response[key] && Array.isArray(response[key])) {
-              extractedArray = response[key];
-              debugLog(`Found array in response.${key}`, extractedArray);
-              break;
-            }
-          }
-
-          if (!extractedArray) {
-            throw new Error('Response is not an array and no array found in response object');
-          }
-
-          response = extractedArray;
-        }
-
-        if (response.length === 0) {
-          debugLog('API returned empty array, using mock data');
-          const mockActivities = getMockActivities();
-          const validatedMockActivities = mockActivities
-            .map(validateActivity)
-            .filter(Boolean);
-
-          const transformedMockActivities: Activity[] = validatedMockActivities
-            .filter((activity): activity is NonNullable<typeof activity> => !!activity)
-            .map(activity => ({
-              id: activity.id,
-              timestamp: activity.timestamp,
-              action: activity.action,
-              description: formatDescription(activity),
-              status: determineStatus(activity),
-              details: activity.details,
-              product: activity.product,
-              value: activity.value
-            }));
-
-          setActivities(transformedMockActivities);
-          setFilteredActivities(transformedMockActivities);
-          setLoading(false);
-          return;
-        }
-        
-        // Validate and transform each activity
-        const validatedActivities = response
-          .map(validateActivity)
-          .filter((activity: any): activity is NonNullable<typeof activity> => {
-            if (!activity) {
-              debugLog('Filtered out invalid activity');
-              return false;
-            }
-            return true;
-          });
-
-        debugLog('Validated activities', {
-          originalCount: response.length,
-          validatedCount: validatedActivities.length,
-          sample: validatedActivities[0]
-        });
-
-        // Transform backend data to match our expected format
-        const transformedActivities = validatedActivities.map((activity: any) => {
-          try {
-            return {
-              id: activity.id,
-              timestamp: activity.timestamp,
-              action: activity.action,
-              description: formatDescription(activity),
-              status: determineStatus(activity),
-              details: activity.details,
-              product: activity.product,
-              value: activity.value
-            };
-          } catch (err) {
-            debugLog('Error transforming activity', { activity, error: (err as Error).message });
-            return {
-              id: activity.id,
-              timestamp: activity.timestamp,
-              action: activity.action,
-              description: `Error formatting description for ${activity.action}`,
-              status: 'info' as const,
-              details: activity.details,
-              product: activity.product,
-              value: activity.value
-            };
-          }
-        });
-
-        debugLog('Successfully transformed activities', {
-          count: transformedActivities.length,
-          sample: transformedActivities[0]
-        });
-
-        setActivities(transformedActivities);
-        setFilteredActivities(transformedActivities);
-        setRetryCount(0); // Reset retry count on success
-
-      } catch (err) {
-        const error = err as Error;
-        debugLog('Error in fetchActivities', {
-          error: error.message,
-          stack: error.stack,
-          retryCount
-        });
-
-        console.error('Error fetching activities:', error);
-        
-        // If this is the first error or we haven't exceeded retry limit, try fallback
-        if (retryCount < 2) {
-          debugLog('Using fallback mock data due to API error');
-          const mockActivities = getMockActivities();
-          const validatedMockActivities = mockActivities
-            .map(validateActivity)
-            .filter(Boolean);
-
-          const transformedMockActivities: Activity[] = validatedMockActivities
-            .filter((activity): activity is NonNullable<typeof activity> => !!activity)
-            .map(activity => ({
-              id: activity.id,
-              timestamp: activity.timestamp,
-              action: activity.action,
-              description: formatDescription(activity),
-              status: determineStatus(activity),
-              details: activity.details,
-              product: activity.product,
-              value: activity.value
-            }));
-
-          setActivities(transformedMockActivities);
-          setFilteredActivities(transformedMockActivities);
-
-          setError(`API Error (using fallback data): ${error.message}`);
-        } else {
-          setError(`Failed to load activity history after ${retryCount + 1} attempts: ${error.message}`);
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchActivities();
-  }, [clientId, retryCount]); // Added missing dependencies
-
-  // Transform backend activity into user-friendly description with error handling
-  const formatDescription = (activity: any) => {
-    try {
-      const details = activity.details || {};
-      
-      switch (activity.action) {
-        case 'SBT_MINTED':
-          return `You minted a Soulbound Token${activity.product ? ` for: ${activity.product}` : ''}`;
-        
-        case 'PASSPORT_ASSIGNED':
-          return `New product authenticated and added to your vault${activity.product ? `: ${activity.product}` : ''}`;
-        
-        case 'CLIENT_LOGIN':
-          const method = details.method === 'biometric' ? ' using biometric authentication' : 
-                       details.method === 'biometric_email' ? ' using Face ID' : '';
-          return `You accessed your AUCTA vault${method}`;
-        
-        case 'CLIENT_LOGOUT':
-          return 'You logged out of your AUCTA vault';
-        
-        case 'PROXY_REQUEST_SUBMITTED':
-          const proxyName = details.proxy_name || 'unknown';
-          const role = details.role ? ` (${details.role.replace('_', ' ')})` : '';
-          return `You submitted a request to assign proxy: ${proxyName}${role}`;
-        
-        case 'PROXY_ACCESS_REVOKED':
-          return `You revoked proxy access for: ${details.proxy_name || 'unknown proxy'}`;
-        
-        case 'PROFILE_UPDATE':
-          const fields = details.updated_fields ? details.updated_fields.join(', ') : 'profile information';
-          return `You updated your ${fields}`;
-        
-        case 'WALLET_EXPORT':
-          return 'You exported your complete wallet data';
-        
-        case 'DATA_EXPORT':
-          return 'You exported your complete vault data (GDPR compliance)';
-        
-        case 'KEY_ROTATION':
-          return 'Your wallet security key was rotated for enhanced protection';
-        
-        case 'MONEYSBT_WITHDRAWAL':
-          const amount = details.amount || activity.value || 'unknown amount';
-          return `You withdrew ${typeof amount === 'number' ? '€' + amount.toFixed(2) : amount} from your MoneySBT cashback balance`;
-        
-        case 'KYC_CHANGE_REQUEST':
-          return 'You submitted a request to update your KYC information';
-        
-        case 'GEO_TRACKING_TOGGLE':
-          const enabled = details.enabled ? 'activated' : 'deactivated';
-          return `You requested geo-tracking ${enabled} for your products`;
-        
-        case 'TRUSTED_LOCATION_REQUEST':
-          const locationName = details.name || 'a new location';
-          return `You requested to add ${locationName} as a trusted location`;
-        
-        case 'NEW_VAULT_REQUEST':
-          return `You requested a new vault in ${details.location || 'unspecified location'}`;
-        
-        case 'PHYSICAL_AGENT_REQUEST':
-          const urgency = details.urgency || 'standard';
-          return `You requested physical agent support (${urgency} priority)`;
-        
-        case 'EMERGENCY_LOCKDOWN_REQUEST':
-          return 'You initiated an emergency lockdown for your products';
-        
-        case 'PRODUCT_STATUS_REPORT':
-          const status = details.new_status || 'status update';
-          return `You reported a product status change: ${status}`;
-        
-        case '2FA_ACTIVATION_REQUEST':
-          const method2fa = details.method || 'two-factor authentication';
-          return `You requested ${method2fa} activation`;
-        
-        case 'DEVICE_RESET_REQUEST':
-          return 'You requested a device reset for security purposes';
-        
-        case 'LOGOUT_ALL_REQUEST':
-          return 'You requested to logout from all devices';
-        
-        case 'SUSPICIOUS_ACTIVITY_REPORT':
-          return 'You reported suspicious activity on your account';
-        
-        default:
-          const actionName = activity.action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (l: string) => l.toUpperCase());
-          return activity.product ? `${actionName}: ${activity.product}` : actionName;
-      }
-    } catch (err) {
-      debugLog('Error formatting description', { activity, error: (err as Error).message });
-      return `Activity: ${activity.action || 'Unknown'}`;
-    }
-  };
-
-  // Determine status from activity data with error handling
-  const determineStatus = (activity: any) => {
-    try {
-      const details = activity.details || {};
-      
-      if (details.status) {
-        return details.status.toLowerCase();
-      }
-      
-      if (activity.status) {
-        return activity.status.toLowerCase();
-      }
-      
-      // Default status based on action type
-      switch (activity.action) {
-        case 'CLIENT_LOGIN':
-        case 'CLIENT_LOGOUT':
-        case 'SBT_MINTED':
-        case 'PASSPORT_ASSIGNED':
-        case 'PROFILE_UPDATE':
-        case 'WALLET_EXPORT':
-        case 'DATA_EXPORT':
-        case 'KEY_ROTATION':
-        case 'MONEYSBT_WITHDRAWAL':
-          return 'completed';
-        
-        case 'PROXY_REQUEST_SUBMITTED':
-        case 'KYC_CHANGE_REQUEST':
-        case 'GEO_TRACKING_TOGGLE':
-        case 'TRUSTED_LOCATION_REQUEST':
-        case 'NEW_VAULT_REQUEST':
-        case 'PHYSICAL_AGENT_REQUEST':
-        case 'EMERGENCY_LOCKDOWN_REQUEST':
-        case '2FA_ACTIVATION_REQUEST':
-        case 'DEVICE_RESET_REQUEST':
-        case 'LOGOUT_ALL_REQUEST':
-          return 'pending_review';
-        
-        case 'SUSPICIOUS_ACTIVITY_REPORT':
-          return 'under_investigation';
-        
-        default:
-          return 'completed';
-      }
-    } catch (err) {
-      debugLog('Error determining status', { activity, error: (err as Error).message });
-      return 'info';
-    }
-  };
-
-  // Retry function
-  const handleRetry = () => {
-    setRetryCount(prev => prev + 1);
-    setError(null);
-  };
-
-  // Filter activities based on search and filters
   useEffect(() => {
-    let filtered = activities;
+    filterActivities();
+  }, [activities, searchTerm, dateFrom, dateTo]);
 
+  const fetchActivityData = async (): Promise<void> => {
+    try {
+      const client = auth.getClientData();
+      if (!client) return;
+      
+      setClientData(client);
+      
+      // Fetch activity logs from the backend
+      const activityData: Activity[] = await api.getClientActivity(client.id, 100);
+      setActivities(activityData);
+      setFilteredActivities(activityData);
+    } catch (error) {
+      console.error('Error fetching activity data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filterActivities = (): void => {
+    let filtered = [...activities];
+    
     // Search filter
     if (searchTerm) {
-      filtered = filtered.filter(activity => 
-        activity.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (activity.product && activity.product.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (activity.details?.proxy_name && activity.details.proxy_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        activity.action?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const search = searchTerm.toLowerCase();
+      filtered = filtered.filter(activity => {
+        const description = formatActionDescription(activity.action, activity.details).toLowerCase();
+        const action = activity.action.toLowerCase();
+        const reference = (activity.product || activity.details?.proxy_name || '').toLowerCase();
+        
+        return description.includes(search) || 
+               action.includes(search) || 
+               reference.includes(search);
+      });
     }
-
-    // Action type filter
-    if (actionFilter !== 'all') {
-      filtered = filtered.filter(activity => activity.action === actionFilter);
-    }
-
-    // Status filter
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(activity => activity.status === statusFilter);
-    }
-
+    
     // Date range filter
-    const now = new Date();
-    if (dateRange !== 'all') {
-      const daysBack = {
-        'today': 1,
-        '7_days': 7,
-        '30_days': 30
-      }[dateRange];
-
-      if (daysBack) {
-        const cutoff = new Date(now.getTime() - (daysBack * 24 * 60 * 60 * 1000));
-        filtered = filtered.filter(activity => new Date(activity.timestamp) >= cutoff);
-      }
+    if (dateFrom) {
+      const fromDate = new Date(dateFrom);
+      filtered = filtered.filter(activity => new Date(activity.timestamp) >= fromDate);
     }
-
+    
+    if (dateTo) {
+      const toDate = new Date(dateTo);
+      toDate.setHours(23, 59, 59, 999); // Include entire day
+      filtered = filtered.filter(activity => new Date(activity.timestamp) <= toDate);
+    }
+    
     setFilteredActivities(filtered);
-  }, [activities, searchTerm, actionFilter, statusFilter, dateRange]);
-
-  const formatTimestamp = (timestamp: string) => {
-    const date = new Date(timestamp);
-    return {
-      date: date.toLocaleDateString('en-GB', { 
-        day: 'numeric', 
-        month: 'long', 
-        year: 'numeric' 
-      }),
-      time: date.toLocaleTimeString('en-GB', { 
-        hour: '2-digit', 
-        minute: '2-digit',
-        timeZoneName: 'short'
-      })
-    };
   };
 
-  const formatActionName = (action: string) => {
-    return action.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase());
+  const handleExportCSV = (): void => {
+    const filename = `aucta-activity-log-${new Date().toISOString().split('T')[0]}.csv`;
+    exportToCSV(filteredActivities, filename);
   };
 
-  const handleExportPDF = async () => {
-    try {
-      // Check if exportClientData exists before calling it
-      let exportData = null;
-      if (api && typeof api.exportClientData === 'function') {
-        exportData = await api.exportClientData(clientId);
-      }
-      
-      // Create a simple PDF-like content for download
-      const pdfContent = `AUCTA Activity Log Report
-Client: ${clientData?.name || 'Unknown'}
-Generated: ${new Date().toLocaleString()}
-
-${filteredActivities.map(activity => {
-  const { date, time } = formatTimestamp(activity.timestamp);
-  return `${date} ${time} - ${formatActionName(activity.action)}: ${activity.description}`;
-}).join('\n')}
-
-This report is certified and verified by AUCTA's secure infrastructure.`;
-
-      const blob = new Blob([pdfContent], { type: 'text/plain' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `aucta_activity_log_${new Date().toISOString().split('T')[0]}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert('Export failed. Please try again.');
-    }
+  const handleExportPDF = (): void => {
+    exportToPDF(filteredActivities, clientData?.name || 'Client');
   };
-
-  const handleExportCSV = () => {
-    const csvContent = "data:text/csv;charset=utf-8," + 
-      "Date,Time,Action,Description,Status\n" +
-      filteredActivities.map(activity => {
-        const { date, time } = formatTimestamp(activity.timestamp);
-        return `"${date}","${time}","${formatActionName(activity.action)}","${activity.description}","${activity.status}"`;
-      }).join("\n");
-
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `aucta_activity_log_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Get unique action types for filter dropdown
-  const uniqueActions = [...new Set(activities.map(a => a.action))];
-  const uniqueStatuses = [...new Set(activities.map(a => a.status))];
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading your activity history...</p>
-          {retryCount > 0 && (
-            <p className="text-sm text-gray-500 mt-2">Retry attempt {retryCount}</p>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center max-w-2xl mx-auto p-6">
-          <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">Unable to Load Activity Log</h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          
-          <div className="flex justify-center space-x-4">
-            <button 
-              onClick={handleRetry}
-              className="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-            >
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Try Again
-            </button>
-            <button 
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Reload Page
-            </button>
-          </div>
-
-          {/* Debug Information - only show in development */}
-          {process.env.NODE_ENV === 'development' && debugInfo && (
-            <details className="mt-6 text-left">
-              <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
-                Debug Information (Development Mode)
-              </summary>
-              <pre className="mt-2 p-4 bg-gray-100 rounded text-xs overflow-auto max-h-40">
-                {JSON.stringify(debugInfo, null, 2)}
-              </pre>
-            </details>
-          )}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '400px'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            width: '40px',
+            height: '40px',
+            border: '2px solid #e0e0e0',
+            borderTopColor: '#000',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            margin: '0 auto 16px'
+          }} />
+          <p style={{ color: '#666', fontSize: '14px' }}>Loading activity log...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Show warning if using fallback data */}
-      {error && activities.length > 0 && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
-          <div className="flex">
-            <AlertTriangle className="h-5 w-5 text-yellow-400" />
-            <div className="ml-3">
-              <p className="text-sm text-yellow-700">
-                Using fallback data due to API issues. Some activities may not reflect your actual history.
-              </p>
+    <div>
+      {/* Header Section */}
+      <div style={{
+        marginBottom: '32px'
+      }}>
+        <h1 style={{
+          fontSize: '32px',
+          fontWeight: 300,
+          marginBottom: '8px',
+          letterSpacing: '-0.02em'
+        }}>
+          Activity Log
+        </h1>
+        <p style={{
+          fontSize: '16px',
+          color: '#666'
+        }}>
+          Complete audit trail of all actions in your vault
+        </p>
+      </div>
+
+      {/* Filters and Export Section */}
+      <div style={{
+        background: '#fff',
+        borderRadius: '12px',
+        padding: '24px',
+        marginBottom: '24px',
+        border: '1px solid #e0e0e0'
+      }}>
+        <div style={{
+          display: 'flex',
+          gap: '16px',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          {/* Search and Date Filters */}
+          <div style={{
+            display: 'flex',
+            gap: '16px',
+            flex: 1,
+            flexWrap: 'wrap',
+            minWidth: '300px'
+          }}>
+            {/* Search Field */}
+            <div style={{
+              position: 'relative',
+              flex: '1 1 300px'
+            }}>
+              <Search size={20} style={{
+                position: 'absolute',
+                left: '12px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: '#666'
+              }} />
+              <input
+                type="text"
+                placeholder="Search activities..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 10px 10px 44px',
+                  border: '1px solid #e0e0e0',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  transition: 'border-color 0.3s'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#000'}
+                onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
+              />
             </div>
+
+            {/* Date From */}
+            <div style={{
+              position: 'relative',
+              flex: '0 0 160px'
+            }}>
+              <Calendar size={20} style={{
+                position: 'absolute',
+                left: '12px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: '#666',
+                pointerEvents: 'none'
+              }} />
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 10px 10px 44px',
+                  border: '1px solid #e0e0e0',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  transition: 'border-color 0.3s'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#000'}
+                onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
+              />
+            </div>
+
+            {/* Date To */}
+            <div style={{
+              position: 'relative',
+              flex: '0 0 160px'
+            }}>
+              <Calendar size={20} style={{
+                position: 'absolute',
+                left: '12px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: '#666',
+                pointerEvents: 'none'
+              }} />
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 10px 10px 44px',
+                  border: '1px solid #e0e0e0',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  outline: 'none',
+                  transition: 'border-color 0.3s'
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#000'}
+                onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
+              />
+            </div>
+          </div>
+
+          {/* Export Buttons */}
+          <div style={{
+            display: 'flex',
+            gap: '12px'
+          }}>
+            <button
+              onClick={handleExportPDF}
+              style={{
+                padding: '10px 20px',
+                background: '#000',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                transition: 'background 0.3s'
+              }}
+              onMouseEnter={(e) => (e.target as HTMLButtonElement).style.background = '#333'}
+              onMouseLeave={(e) => (e.target as HTMLButtonElement).style.background = '#000'}
+            >
+              <Download size={16} />
+              Export as PDF
+            </button>
+            <button
+              onClick={handleExportCSV}
+              style={{
+                padding: '10px 20px',
+                background: '#fff',
+                color: '#000',
+                border: '1px solid #000',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                transition: 'all 0.3s'
+              }}
+              onMouseEnter={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.background = '#000';
+                target.style.color = '#fff';
+              }}
+              onMouseLeave={(e) => {
+                const target = e.target as HTMLButtonElement;
+                target.style.background = '#fff';
+                target.style.color = '#000';
+              }}
+            >
+              <Download size={16} />
+              Export as CSV
+            </button>
           </div>
         </div>
-      )}
 
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          <div className="flex justify-between items-start">
-            <div>
-              <h1 className="text-3xl font-light text-gray-900 mb-2">Activity Log</h1>
-              <p className="text-gray-600 max-w-2xl">
-                A complete, timestamped history of your interactions within AUCTA. 
-                Certified. Verified. Immutable.
-              </p>
-            </div>
-            <div className="flex space-x-3">
-              <button
-                onClick={handleExportPDF}
-                className="flex items-center px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
-              >
-                <FileText className="w-4 h-4 mr-2" />
-                Download PDF
-              </button>
-              <button
-                onClick={handleExportCSV}
-                className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                <Download className="w-4 h-4 mr-2" />
-                Export CSV
-              </button>
-            </div>
-          </div>
+        {/* Results count */}
+        <div style={{
+          marginTop: '16px',
+          fontSize: '14px',
+          color: '#666'
+        }}>
+          Showing {filteredActivities.length} of {activities.length} activities
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-          {/* Filters Panel */}
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-xl border border-gray-200 p-6 sticky top-8">
-              <h3 className="text-lg font-medium text-gray-900 mb-6 flex items-center">
-                <Filter className="w-5 h-5 mr-2" />
-                Filters
-              </h3>
-
-              {/* Search */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Search
-                </label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-                  <input
-                    type="text"
-                    placeholder="Search activities..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-200 focus:border-gray-400"
-                  />
-                </div>
-              </div>
-
-              {/* Date Range */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Date Range
-                </label>
-                <select
-                  value={dateRange}
-                  onChange={(e) => setDateRange(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-200 focus:border-gray-400"
-                >
-                  <option value="today">Today</option>
-                  <option value="7_days">Last 7 Days</option>
-                  <option value="30_days">Last 30 Days</option>
-                  <option value="all">All Time</option>
-                </select>
-              </div>
-
-              {/* Action Type */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Action Type
-                </label>
-                <select
-                  value={actionFilter}
-                  onChange={(e) => setActionFilter(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-200 focus:border-gray-400"
-                >
-                  <option value="all">All Actions</option>
-                  {uniqueActions.map(action => (
-                    <option key={action} value={action}>
-                      {formatActionName(action)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Status */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Status
-                </label>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-200 focus:border-gray-400"
-                >
-                  <option value="all">All Status</option>
-                  {uniqueStatuses.map(status => (
-                    <option key={status} value={status}>
-                      {(status in statusConfig
-                        ? statusConfig[status as keyof typeof statusConfig].label
-                        : status)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Results Count */}
-              <div className="pt-4 border-t border-gray-200">
-                <p className="text-sm text-gray-600">
-                  Showing {filteredActivities.length} of {activities.length} activities
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Activity Feed */}
-          <div className="lg:col-span-3">
-            <div className="space-y-4">
-              {filteredActivities.length === 0 ? (
-                <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-                  <Clock className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No Activities Found</h3>
-                  <p className="text-gray-600">
-                    {activities.length === 0 
-                      ? "No activity history available yet." 
-                      : "Try adjusting your search criteria or date range to see more activities."
-                    }
-                  </p>
-                </div>
-              ) : (
-                filteredActivities.map((activity, index) => {
-                  const statusInfo = (statusConfig[activity.status as StatusKey] ?? statusConfig.completed);
-                  const ActionIcon = actionIcons[activity.action] || Package;
-                  const StatusIcon = statusInfo.icon;
-                  const isExpanded = expandedItem === activity.id;
-                  const { date, time } = formatTimestamp(activity.timestamp);
-
-                  return (
-                    <div key={activity.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                      <div 
-                        className="p-6 cursor-pointer hover:bg-gray-50 transition-colors"
-                        onClick={() => setExpandedItem(isExpanded ? null : activity.id)}
-                      >
-                        <div className="flex items-start space-x-4">
-                          {/* Timeline indicator */}
-                          <div className="flex flex-col items-center">
-                            <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
-                              <ActionIcon className="w-5 h-5 text-gray-600" />
-                            </div>
-                            {index < filteredActivities.length - 1 && (
-                              <div className="w-px h-8 bg-gray-200 mt-4"></div>
-                            )}
-                          </div>
-
-                          {/* Content */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between">
-                              <div className="flex-1">
-                                <div className="flex items-center space-x-3 mb-2">
-                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                                    {formatActionName(activity.action)}
-                                  </span>
-                                  <div className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${statusInfo.bg} ${statusInfo.color}`}>
-                                    <StatusIcon className="w-3 h-3 mr-1" />
-                                    {statusInfo.label}
-                                  </div>
-                                  {activity.value && (
-                                    <span className="text-xs text-gray-500">
-                                      {typeof activity.value === 'number' ? `€${activity.value.toFixed(2)}` : activity.value}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-gray-900 font-medium mb-1">
-                                  {activity.description}
-                                </p>
-                                <div className="flex items-center text-sm text-gray-500 space-x-4">
-                                  <span className="flex items-center">
-                                    <Calendar className="w-4 h-4 mr-1" />
-                                    {date}
-                                  </span>
-                                  <span className="flex items-center">
-                                    <Clock className="w-4 h-4 mr-1" />
-                                    {time}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Expanded Details */}
-                            {isExpanded && activity.details && Object.keys(activity.details).length > 0 && (
-                              <div className="mt-4 pt-4 border-t border-gray-100">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  {Object.entries(activity.details).map(([key, value]) => {
-                                    // Skip internal fields or empty values
-                                    if (!value || key === 'timestamp' || key === 'status') return null;
-                                    
-                                    return (
-                                      <div key={key} className="bg-gray-50 rounded-lg p-3">
-                                        <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                                          {key.replace(/_/g, ' ')}
-                                        </dt>
-                                        <dd className="text-sm text-gray-900">
-                                          {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                                        </dd>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer Information */}
-        <div className="mt-12">
-          <div className="bg-gray-900 rounded-xl p-8 text-center">
-            <Shield className="w-8 h-8 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-white mb-2">Certified Activity Record</h3>
-            <p className="text-gray-300 max-w-3xl mx-auto">
-              All actions are certified, timestamped, and stored within AUCTA's private infrastructure. 
-              For notarization or audit requests, please contact your assigned AUCTA advisor. 
-              This log cannot be altered or deleted.
+      {/* Activity List */}
+      <div style={{
+        background: '#fff',
+        borderRadius: '12px',
+        border: '1px solid #e0e0e0',
+        overflow: 'hidden'
+      }}>
+        {filteredActivities.length === 0 ? (
+          <div style={{
+            padding: '60px',
+            textAlign: 'center'
+          }}>
+            <FileText size={48} color="#e0e0e0" style={{ margin: '0 auto 16px' }} />
+            <p style={{ color: '#666', fontSize: '16px' }}>
+              No activities found matching your filters
             </p>
           </div>
-        </div>
+        ) : (
+          <div>
+            {filteredActivities.map((activity, index) => {
+              const Icon = getActionIcon(activity.action);
+              const status = getStatusBadge(activity.action, activity.details);
+              const StatusIcon = status.icon;
+              const description = formatActionDescription(activity.action, activity.details);
+              const reference = activity.product || activity.details?.proxy_name || activity.details?.transactionId;
+              
+              return (
+                <div
+                  key={activity.id || `activity-${index}`}
+                  style={{
+                    padding: '20px 24px',
+                    borderBottom: index < filteredActivities.length - 1 ? '1px solid #e0e0e0' : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    transition: 'background 0.2s',
+                    cursor: 'pointer'
+                  }}
+                  onMouseEnter={(e) => {
+                    const target = e.currentTarget as HTMLElement;
+                    target.style.background = '#f8f8f8';
+                  }}
+                  onMouseLeave={(e) => {
+                    const target = e.currentTarget as HTMLElement;
+                    target.style.background = '#fff';
+                  }}
+                >
+                  {/* Icon */}
+                  <div style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '8px',
+                    background: '#f5f5f5',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}>
+                    <Icon size={20} color="#666" />
+                  </div>
+
+                  {/* Content */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      marginBottom: '4px'
+                    }}>
+                      <span style={{
+                        fontSize: '14px',
+                        fontWeight: 500,
+                        color: '#000'
+                      }}>
+                        {activity.action.replace(/_/g, ' ')}
+                      </span>
+                      {reference && (
+                        <span style={{
+                          fontSize: '12px',
+                          color: '#666',
+                          background: '#f5f5f5',
+                          padding: '2px 8px',
+                          borderRadius: '4px'
+                        }}>
+                          {reference}
+                        </span>
+                      )}
+                    </div>
+                    <p style={{
+                      fontSize: '14px',
+                      color: '#666',
+                      margin: 0
+                    }}>
+                      {description}
+                    </p>
+                  </div>
+
+                  {/* Timestamp */}
+                  <div style={{
+                    fontSize: '14px',
+                    color: '#999',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {formatTimestamp(activity.timestamp)}
+                  </div>
+
+                  {/* Status */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    background: status.color + '20',
+                    color: status.color,
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    whiteSpace: 'nowrap'
+                  }}>
+                    <StatusIcon size={14} />
+                    {status.text}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      <style jsx>{`
+        @keyframes spin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+      `}</style>
     </div>
   );
-};
-
-export default ActivityLog;
+}
