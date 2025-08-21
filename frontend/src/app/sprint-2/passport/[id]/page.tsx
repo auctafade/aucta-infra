@@ -346,12 +346,12 @@ export default function PassportDetail() {
                 fontWeight: 300,
                 border: '3px solid #f0f0f0'
               }}>
-                {!kycInfo?.selfie && owner.name.charAt(0).toUpperCase()}
+                {!kycInfo?.selfie && owner?.name?.charAt(0)?.toUpperCase()}
               </div>
 
               <div style={{ flex: 1 }}>
                 <h3 style={{ fontSize: '24px', fontWeight: 500, marginBottom: '8px' }}>
-                  {owner.name}
+                  {owner?.name || 'Unknown Owner'}
                 </h3>
                 <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
                   <div>
@@ -361,12 +361,12 @@ export default function PassportDetail() {
                   <div>
                     <p style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Wallet Address</p>
                     <p style={{ fontSize: '14px', fontFamily: 'monospace' }}>
-                      {owner.wallet_address.slice(0, 6)}...{owner.wallet_address.slice(-4)}
+                      {owner?.wallet_address ? `${owner.wallet_address.slice(0, 6)}...${owner.wallet_address.slice(-4)}` : 'Not provided'}
                     </p>
                   </div>
                   <div>
                     <p style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>Member Since</p>
-                    <p style={{ fontSize: '14px' }}>{new Date(owner.created_at).toLocaleDateString()}</p>
+                    <p style={{ fontSize: '14px' }}>{owner?.created_at ? new Date(owner.created_at).toLocaleDateString() : 'Unknown'}</p>
                   </div>
                 </div>
               </div>

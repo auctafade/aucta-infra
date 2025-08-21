@@ -3,9 +3,9 @@ require('dotenv').config();
 
 const pool = new Pool({
   host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
+  port: process.env.DB_PORT || 5433,
   database: process.env.DB_NAME || 'aucta_db',
-  user: process.env.DB_USER || 'postgres',
+  user: process.env.DB_USER || 'thiswillnotfade',
   password: process.env.DB_PASSWORD,
   max: 20,
   idleTimeoutMillis: 30000,

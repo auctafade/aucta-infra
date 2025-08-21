@@ -67,17 +67,15 @@ export default function ModernHomepage() {
       title: 'Sprint 3',
       subtitle: 'Resale Engine',
       routes: [
-        { name: 'Resale Initiate', path: 'sprint-3/resale-initiate' },
-        { name: 'Configure Resale', path: '/sprint-3/resale-configure' },
-        { name: 'Assign Buyer', path: '/sprint-3/resale-assign-buyer' },
-        { name: 'Finalize Resale', path: '/sprint-3/resale-finalize' },
-        { name: 'Resale Summary', path: '/sprint-3/resale-summary' },
-        { name: 'Contract Preview', path: '/sprint-3/resale-contract-preview' },
-        { name: 'Royalty Finalize', path: '/sprint-3/royalty-finalize' },
-        { name: 'Royalty Split Engine', path: '/sprint-3/royalty-split-engine' },
+        { name: 'Resale Console', path: 'sprint-3/resale-console' },
+        { name: 'External Marketplace', path: '/sprint-3/external-marketplace' },
+        { name: 'Royalty Engine', path: '/sprint-3/royalty-engine' },
+        { name: 'Contract Logs', path: '/sprint-3/contract-logs' },
         { name: 'Resale Traceability', path: '/sprint-3/resale-traceability' },
-        { name: 'Cashback Wallet', path: '/sprint-3/cashback-wallet' },
-        { name: 'Admin Resale Dashboard', path: '/sprint-3/admin-resale-dashboard' }
+        { name: 'Cashback Ledger', path: '/sprint-3/cashback-ledger' },
+        { name: 'Proxy Tracker', path: '/sprint-3/proxy-tracker' },
+        { name: 'Valuation History', path: '/sprint-3/valuation-history' },
+        { name: 'Inheritance Overview', path: '/sprint-3/inheritance-overview' },
       ]
     },
     {
@@ -107,8 +105,10 @@ export default function ModernHomepage() {
     {
       id: 'sprint-8',
       title: 'Sprint 8',
-      subtitle: 'System Control',
-      routes: []
+      subtitle: 'Logistics & Authentication',
+      routes: [
+        { name: 'Logistics & Authentication', path: '/sprint-8/logistics' }
+      ]
     }
   ];
 

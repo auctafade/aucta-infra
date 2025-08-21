@@ -1,0 +1,18 @@
+✅ Hub Price Book initialized with 4 hubs
+New listener added for event: inventory.update
+New listener added for event: hub.console.update
+New listener added for event: tier.gate.update
+New listener added for event: quality.alert
+New listener added for event: supplier.alert
+🚀 AUCTA Backend running on http://localhost:4000
+📊 Database: PostgreSQL on port 5433
+🔧 Environment: development
+🔐 Security endpoints: ENABLED
+🔗 Proxy management: ENABLED
+📋 Activity logging: ENHANCED
+📄 Document generation: ENABLED
+✅ Connected to PostgreSQL database as user: thiswillnotfade
+📊 Database: aucta_db
+📋 Existing tables: action_logs, clients, passports, sbts
+✅ Connected to PostgreSQL database
+✅ Connected to PostgreSQL database

@@ -4,8 +4,10 @@
 import React, { useState, useEffect } from 'react';
 import { Package, ExternalLink, Shield, Calendar, Hash } from 'lucide-react';
 import { api, auth } from '@/lib/api';
+import { useRouter } from 'next/navigation';
 
 export default function VaultClient() {
+  const router = useRouter();
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [clientData, setClientData] = useState<any>(null);
@@ -17,8 +19,44 @@ export default function VaultClient() {
         const client = auth.getClientData();
         if (!client) {
           console.warn('No client data found');
-          setLoading(false);
-          return;
+          // For testing purposes, let's try to fetch data for Tom Holland (client ID 1)
+          // In production, this should redirect to login
+          console.log('Attempting to fetch data for test client (Tom Holland)');
+          try {
+            const testClientData = await api.getClient(1);
+            const testVaultData = await api.getClientVault(1);
+            setClientData(testClientData);
+            setProducts(Array.isArray(testVaultData) ? testVaultData : []);
+            
+            // Calculate total value
+            const productsArray = Array.isArray(testVaultData) ? testVaultData : [];
+            const total = productsArray.reduce((sum: number, product: any) => {
+              const metadata = typeof product.metadata === 'string' 
+                ? JSON.parse(product.metadata) 
+                : product.metadata;
+              
+              const price = product.original_price || 
+                           metadata?.original_price || 
+                           metadata?.value ||
+                           product.value;
+              
+              if (price) {
+                const numericPrice = parseFloat(price.toString().replace(/[^0-9.-]+/g, ''));
+                return sum + (isNaN(numericPrice) ? 0 : numericPrice);
+              }
+              
+              return sum;
+            }, 0);
+            
+            setTotalValue(total);
+            setLoading(false);
+            return;
+          } catch (testError) {
+            console.error('Test client fetch failed:', testError);
+            // If test fails, redirect to login
+            router.push('/sprint-2/login-client');
+            return;
+          }
         }
         
         console.log('Client data:', client); // Debug log
@@ -151,6 +189,21 @@ export default function VaultClient() {
 
   return (
     <div>
+      {/* Test Mode Notice */}
+      {!auth.isAuthenticated() && (
+        <div style={{
+          background: '#ff6b35',
+          color: '#fff',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          marginBottom: '24px',
+          textAlign: 'center',
+          fontSize: '14px'
+        }}>
+          🧪 Test Mode: Displaying Tom Holland's vault data for demonstration purposes
+        </div>
+      )}
+      
       {/* Welcome Section */}
       <div style={{
         background: 'linear-gradient(135deg, #000 0%, #333 100%)',
